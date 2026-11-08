@@ -13,12 +13,15 @@ Each run writes a new render to `output/aws-bookmarks-<UTC timestamp>.html` (for
 - **One org or several.** Pass one env file per org and the page shows each org as a top-level group (see [Multiple orgs](#multiple-orgs)).
 - **Group by business domain or by org hierarchy.** Domain comes from the table's OU attribute. Accounts with no OU value, or with no table row, go under **Legacy**.
 - **Environment badges and filters** for Lab, Sbx, Dev, Tst, Prd, and Bil (billing). Common spellings are normalized (`sandbox` → Sbx, `test` → Tst, `production` → Prd, `billing` → Bil). The console header color is set per environment (Bil uses the default header).
-- **Roles stored in localStorage**, managed in the Roles dialog (header button): add, remove, or drag to reorder. Every account shows one switch-role link per role. On first load the page is seeded from `--roles`.
-- **Per-org roles.** An org's env file can add roles for its accounts only (`BM_ORG_ROLES`), and can leave out the global roles (`BM_ORG_OMIT_GLOBAL_ROLES=true`). With both set, `BM_ORG_ROLES` replaces the role list for that org. The Roles dialog lists these, but they can only be changed in the config.
+- **Settings dialog** (header button) holds org on/off (combined page), roles, and bookmark export.
+- **Roles per org, stored in localStorage.** In Settings, add, remove, or drag to reorder; on a combined page, pick the org first. Every account shows one switch-role link per role of its org.
+  - Each org's list starts from its config roles: `BM_DEFAULT_ROLES` plus `BM_ORG_ROLES`, or only `BM_ORG_ROLES` when `BM_ORG_OMIT_GLOBAL_ROLES=true`.
+  - Config roles added later are appended once, and roles you removed stay removed.
+  - A browser list saved before per-org roles carries over to orgs that don't omit the global roles.
 - **Light/dark mode** (dark by default), saved per browser.
 - **Fits the viewport.** Only the account list scrolls. Groups can be collapsed, and the collapsed state is remembered.
 - **Search** (press `/`) across short name, account name, ID, domain, environment, and OU path. Click an account ID to copy it.
-- **Export bookmarks** (in the Advanced dialog, opened by the wrench icon at the top right) downloads a Netscape-format bookmarks file for the visible accounts, with folders matching the current view. Every major browser can import it.
+- **Export bookmarks** (in Settings) downloads a Netscape-format bookmarks file for the visible accounts, with folders matching the current view. Every major browser can import it.
 
 ## Usage
 
@@ -61,11 +64,12 @@ Details:
 - **Org label.** Set it with `BM_ORG_LABEL` in the file. Otherwise it comes from the file name: `prod.env`, `.env.prod` and `prod/.env` all give `prod`. Labels must be unique and can't contain `:`.
 - **Page settings** (`BM_TITLE`, `BM_OUTPUT_DIR`) come from the first file.
 - **Roles.** `BM_DEFAULT_ROLES` from every file is merged in order, without duplicates, into the global list.
-  - The global list (as edited in the page) applies to every org, unless an org sets `BM_ORG_OMIT_GLOBAL_ROLES=true`. That org's own `BM_DEFAULT_ROLES` is then left out of the global list too.
+  - Each org's starting list is the global roles plus its `BM_ORG_ROLES`. An org that sets `BM_ORG_OMIT_GLOBAL_ROLES=true` starts from `BM_ORG_ROLES` only, and its own `BM_DEFAULT_ROLES` is left out of the global roles.
+  - After that, each org's list is edited separately in Settings.
   - `BM_ORG_ROLES` adds roles for that org only.
   - Role ARNs are reduced to the role name, and duplicates are dropped.
   - `BM_ORG_*` keys are read only from the org's own file, never from the shell.
-- **Org on/off.** The header has a chip per org. Click one to hide or show that org's accounts in every view, in the environment counts, and in the export.
+- **Org on/off.** Settings has a switch per org. Switching one off hides that org's accounts in every view, in the environment counts, and in the export.
   - The choice is remembered in the browser (localStorage), so each browser profile can keep its own orgs switched on.
   - Like roles, it's shared across renders opened from the same origin.
 - **Flags.** With several files, only the page flags (`--roles`, `--title`, `-o`) are allowed. Put everything else in the env files.
