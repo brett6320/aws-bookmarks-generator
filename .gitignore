@@ -1,0 +1,15 @@
+# Env files: ./.env and per-org files (prod.env, .env.prod, prod/.env); keep the example
+.env
+.env.*
+*.env
+!.env.example
+
+# Renders
+output/
+
+# Seeder (local only)
+seed_ddb.py
+
+__pycache__/
+.venv/
+.DS_Store
