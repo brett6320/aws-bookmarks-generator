@@ -469,7 +469,8 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
         if multi:
             log.info("Org %s", label)
         if cfg["omit_global_roles"] and not cfg["org_roles"]:
-            log.warning("Org %s omits the global roles but has no org roles; its accounts get no links",
+            log.warning("Org %s omits the global roles but has no org roles; it starts with no links until "
+                        "roles are added in the page",
                         label or "(default)")
         try:
             data = fetch_org_data(cfg)
@@ -622,14 +623,23 @@ header{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:10px
 .btn:hover{background:var(--card-h)}
 .btn b{font-weight:600;color:var(--muted);margin-left:2px}
 dialog{border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text);padding:0;
-  width:min(420px,calc(100vw - 32px));max-height:min(80vh,600px);box-shadow:0 12px 40px rgba(0,0,0,.45)}
+  width:min(460px,calc(100vw - 32px));max-height:min(85vh,720px);box-shadow:0 12px 40px rgba(0,0,0,.45)}
 dialog::backdrop{background:rgba(0,0,0,.55)}
-.dlg{display:flex;flex-direction:column;gap:12px;padding:16px;max-height:min(80vh,600px)}
+.dlg{display:flex;flex-direction:column;gap:12px;padding:16px;max-height:min(85vh,720px);overflow:auto}
+.sect{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:12px}
+.sect h3{margin:0;font-size:13px}
+.sect-head{display:flex;align-items:center;gap:8px;justify-content:space-between}
+.orgtoggles{display:flex;flex-direction:column;gap:4px}
+.orgt{display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--card);cursor:pointer}
+.orgt span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.orgt small{color:var(--muted);font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
+.orgt b{font-weight:500;color:var(--muted);font-size:11px}
+.btn svg{width:14px;height:14px;vertical-align:-2px;margin-right:4px}
 .dlg-head{display:flex;align-items:center;gap:8px}
 .dlg-head h2{font-size:15px;margin:0;flex:1}
 .dlg-head button{border:0;background:transparent;color:var(--muted);font-size:20px;line-height:1;cursor:pointer;padding:0 4px}
 .dlg-head button:hover{color:var(--text)}
-.roles{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;overflow:auto;min-height:0}
+.roles{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;overflow:auto;max-height:40vh}
 .roles:empty::after{content:"No roles yet. Add one below.";color:var(--muted);font-size:12px}
 .roles li{display:flex;align-items:center;gap:6px;padding:6px 8px;cursor:grab;border-radius:5px;background:var(--card);border:1px solid var(--line)}
 .roles li span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -637,12 +647,10 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 .roles li button:hover{color:var(--prd)}
 .roles li.drag{opacity:.4}
 .addrole{display:flex;gap:6px}
+.roleorg{padding:5px 8px;border-radius:5px;border:1px solid var(--line);background:var(--bg);color:var(--text)}
 .addrole input{flex:1;min-width:0;padding:5px 8px;border-radius:5px;border:1px solid var(--line);background:var(--bg)}
 .hint{color:var(--muted);font-size:11px;margin:0}
 main{flex:1;overflow:auto;padding:12px 16px 24px;min-height:0}
-.icon-btn{border:0;background:transparent;color:var(--muted);opacity:.55;padding:4px;border-radius:6px;cursor:pointer;display:inline-flex}
-.icon-btn:hover,.icon-btn:focus-visible{opacity:1;color:var(--text);background:var(--card)}
-.icon-btn svg{width:16px;height:16px}
 .adv-item{display:flex;align-items:center;gap:12px;justify-content:space-between}
 .adv-item p{margin:0;font-size:12px;color:var(--muted)}
 .linkish{border:0;background:none;padding:0;color:var(--accent);cursor:pointer;font-size:11.5px}
@@ -687,30 +695,34 @@ summary .mix i{font-style:normal;font-size:10px;padding:0 5px;border-radius:3px;
   <div class="seg" role="group" aria-label="Group by">
     <button data-view="domain">Business Domains</button><button data-view="org">Org Hierarchy</button>
   </div>
-  <div class="envs" id="orgs" role="group" aria-label="Organizations" hidden></div>
   <div class="envs" id="envs" role="group" aria-label="Environment filter"></div>
-  <button class="btn" id="rolesBtn" title="Manage roles" aria-haspopup="dialog">Roles <b id="roleCount"></b></button>
   <button class="btn" id="collapse" title="Collapse / expand all">⇕</button>
   <button class="btn" id="theme" title="Toggle light/dark"></button>
-  <button class="icon-btn" id="advBtn" title="Advanced" aria-label="Advanced" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></button>
+  <button class="btn" id="settingsBtn" title="Organizations, roles and export" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</button>
 </header>
 <main id="main"></main>
-<dialog id="rolesDlg" aria-labelledby="rolesTitle">
+<dialog id="settingsDlg" aria-labelledby="settingsTitle">
   <div class="dlg">
-    <div class="dlg-head"><h2 id="rolesTitle">Roles</h2><button class="dlg-close" aria-label="Close">×</button></div>
-    <ul class="roles" id="roles"></ul>
-    <form class="addrole" id="addrole"><input id="newrole" placeholder="Role name or role ARN" aria-label="Role name"><button class="btn">Add</button></form>
-    <p class="hint">Saved in this browser. Each account shows a switch-role link per role, in this order (drag to reorder). Defaults added to the config later appear automatically; roles you remove stay removed.</p>
-    <p class="hint" id="orgRoles" hidden></p>
-  </div>
-</dialog>
-<dialog id="advDlg" aria-labelledby="advTitle">
-  <div class="dlg">
-    <div class="dlg-head"><h2 id="advTitle">Advanced</h2><button class="dlg-close" aria-label="Close">×</button></div>
-    <div class="adv-item">
-      <p>Download the accounts currently shown (search and filters applied) as a bookmarks file, in folders matching the current view. Import it from your browser's bookmarks menu.</p>
-      <button class="btn" id="export">Export bookmarks</button>
-    </div>
+    <div class="dlg-head"><h2 id="settingsTitle">Settings</h2><button class="dlg-close" aria-label="Close">×</button></div>
+    <section class="sect" id="orgSect" hidden>
+      <h3>Organizations</h3>
+      <div class="orgtoggles" id="orgs"></div>
+      <p class="hint">Orgs switched off are hidden from every view and from the export. Remembered in this browser.</p>
+    </section>
+    <section class="sect">
+      <div class="sect-head"><h3>Roles</h3><select class="roleorg" id="roleOrg" aria-label="Organization" hidden></select></div>
+      <ul class="roles" id="roles"></ul>
+      <form class="addrole" id="addrole"><input id="newrole" placeholder="Role name or role ARN" aria-label="Role name"><button class="btn">Add</button></form>
+      <p class="hint">Saved in this browser, per org. Each account shows a switch-role link per role, in this order (drag to reorder). Roles added to the config later appear automatically; roles you remove stay removed.</p>
+      <p class="hint" id="orgRoles"></p>
+    </section>
+    <section class="sect">
+      <h3>Export</h3>
+      <div class="adv-item">
+        <p>Download the accounts currently shown (search and filters applied) as a bookmarks file, in folders matching the current view. Import it from your browser's bookmarks menu.</p>
+        <button class="btn" id="export">Export bookmarks</button>
+      </div>
+    </section>
   </div>
 </dialog>
 <div class="toast" id="toast"></div>
@@ -729,21 +741,33 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem("awsbm." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem("awsbm." + k, JSON.stringify(v)); } catch (e) {} },
 };
-// Configured default roles seed a new browser's list. Defaults added to the config later are
-// appended once; roles the user removed stay removed (tracked in awsbm.seenDefaults).
-function initRoles() {
-  const saved = LS.get("roles", null);
-  const seen = new Set(LS.get("seenDefaults", saved ? DATA.defaultRoles : []));
-  const roles = saved || [];
-  for (const r of DATA.defaultRoles) if (!seen.has(r) && !roles.includes(r)) roles.push(r);
-  LS.set("roles", roles);
-  LS.set("seenDefaults", [...new Set([...seen, ...DATA.defaultRoles])]);
+// Each org keeps its own role list in this browser, seeded from its config roles: BM_DEFAULT_ROLES
+// plus BM_ORG_ROLES, or only BM_ORG_ROLES when the org omits the global roles. Config roles added
+// later are appended once; roles the user removed stay removed (tracked in awsbm.seenDefaults:<org>).
+const configRoles = o => o.omitGlobalRoles ? o.roles
+  : [...DATA.defaultRoles, ...o.roles.filter(r => !DATA.defaultRoles.includes(r))];
+const roleKey = i => ":" + (MULTI ? DATA.orgs[i].label : "");
+function initRoles(o, i) {
+  const defs = configRoles(o), k = roleKey(i);
+  let roles = LS.get("roles" + k, null), seen;
+  if (roles) seen = LS.get("seenDefaults" + k, defs);
+  else {
+    // one shared list ("roles") came before per-org lists; carry it over where it applied
+    const legacy = o.omitGlobalRoles ? null : LS.get("roles", null);
+    roles = legacy ? [...legacy] : [];
+    seen = legacy ? LS.get("seenDefaults", DATA.defaultRoles) : [];
+  }
+  seen = new Set(seen);
+  for (const r of defs) if (!seen.has(r) && !roles.includes(r)) roles.push(r);
+  LS.set("roles" + k, roles);
+  LS.set("seenDefaults" + k, [...new Set([...seen, ...defs])]);
   return roles;
 }
 const state = {
   view: LS.get("view", "domain"),
   theme: LS.get("theme", "dark"),
-  roles: initRoles(),
+  roles: DATA.orgs.map(initRoles),  // per org, indexed like DATA.orgs
+  roleOrg: 0,                       // org whose list the Roles dialog edits
   envs: new Set(LS.get("envs", [])),
   collapsed: new Set(LS.get("collapsed", [])),
   hiddenOrgs: new Set(LS.get("hiddenOrgs", [])),  // org labels switched off in this browser
@@ -772,11 +796,7 @@ function toast(msg) {
 }
 
 /* ---------- switch-role links ---------- */
-// global roles (this browser's list) plus the org's configured roles; an org can omit the global list
-function rolesFor(a) {
-  const o = DATA.orgs[a.org];
-  return o.omitGlobalRoles ? o.roles : [...state.roles, ...o.roles.filter(r => !state.roles.includes(r))];
-}
+const rolesFor = a => state.roles[a.org];
 function displayName(a, role) {
   return `${a.shortName} / ${role}`.slice(0, 64);
 }
@@ -802,8 +822,7 @@ function card(a) {
   const roles = rolesFor(a);
   const links = roles.length
     ? roles.map(r => el("a", {href: switchUrl(a, r), target: "_blank", rel: "noopener", title: `Switch to ${r} in ${a.id}`}, r))
-    : DATA.orgs[a.org].omitGlobalRoles ? [el("span", {class: "none"}, "No roles configured for this org")]
-    : [el("button", {class: "linkish", onclick: openRoles}, "Add a role to get links")];
+    : [el("button", {class: "linkish", onclick: () => openSettings(a.org)}, "Add a role to get links")];
   return el("div", {class: "card", style: `--c:${envColor(a.env)}`},
     el("div", {class: "ctop"},
       el("strong", {title: a.shortName}, a.shortName),
@@ -901,47 +920,51 @@ function renderEnvs() {
       onclick: () => { state.envs.has(e) ? state.envs.delete(e) : state.envs.add(e); LS.set("envs", [...state.envs]); renderEnvs(); render(); }},
       el("span", {class: "dot"}), e, el("b", {}, counts[e] || 0))));
 }
-// combined page: switch orgs on/off; remembered per browser (e.g. one browser profile per org)
+// combined page: switch orgs on/off in Settings; remembered per browser (e.g. one browser profile per org)
 function renderOrgs() {
-  const box = document.getElementById("orgs");
-  box.hidden = !MULTI;
+  document.getElementById("orgSect").hidden = !MULTI;
   if (!MULTI) return;
-  box.replaceChildren(...DATA.orgs.map((o, i) => el("button", {class: "chip", style: "--c:var(--accent)",
-      "aria-pressed": String(!state.hiddenOrgs.has(o.label)), title: `Show or hide ${o.label} (remembered in this browser)`,
-      onclick: () => {
-        state.hiddenOrgs.has(o.label) ? state.hiddenOrgs.delete(o.label) : state.hiddenOrgs.add(o.label);
-        LS.set("hiddenOrgs", [...state.hiddenOrgs]); renderOrgs(); renderEnvs(); render();
-      }},
-    el("span", {class: "dot"}), o.label, el("b", {}, DATA.accounts.filter(a => a.org === i).length))));
+  document.getElementById("orgs").replaceChildren(...DATA.orgs.map((o, i) => el("label", {class: "orgt"},
+    el("input", {type: "checkbox", checked: !state.hiddenOrgs.has(o.label),
+      onchange: e => {
+        e.target.checked ? state.hiddenOrgs.delete(o.label) : state.hiddenOrgs.add(o.label);
+        LS.set("hiddenOrgs", [...state.hiddenOrgs]); renderEnvs(); render();
+      }}),
+    el("span", {}, o.label), o.orgId ? el("small", {}, o.orgId) : null,
+    el("b", {title: "Accounts"}, DATA.accounts.filter(a => a.org === i).length))));
 }
 function renderRoles() {
   const ul = document.getElementById("roles");
+  const list = state.roles[state.roleOrg];
   let dragFrom = null;
-  ul.replaceChildren(...state.roles.map((r, i) => el("li", {draggable: "true",
+  ul.replaceChildren(...list.map((r, i) => el("li", {draggable: "true",
       ondragstart: e => { dragFrom = i; e.dataTransfer.setData("text/plain", r); e.dataTransfer.effectAllowed = "move"; e.currentTarget.classList.add("drag"); },
       ondragend: e => e.currentTarget.classList.remove("drag"),
       ondragover: e => e.preventDefault(),
       ondrop: e => { e.preventDefault(); if (dragFrom === null || dragFrom === i) return;
-        const [m] = state.roles.splice(dragFrom, 1); state.roles.splice(i, 0, m); saveRoles(); }},
+        const [m] = list.splice(dragFrom, 1); list.splice(i, 0, m); saveRoles(); }},
     el("span", {title: r}, r),
-    el("button", {title: `Remove ${r}`, "aria-label": `Remove ${r}`, onclick: () => { state.roles.splice(i, 1); saveRoles(); }}, "×"))));
-  document.getElementById("roleCount").textContent = state.roles.length;
+    el("button", {title: `Remove ${r}`, "aria-label": `Remove ${r}`, onclick: () => { list.splice(i, 1); saveRoles(); }}, "×"))));
+  const defs = configRoles(DATA.orgs[state.roleOrg]);
+  document.getElementById("orgRoles").textContent = `From config: ${defs.join(", ") || "none"}`;
+  const sel = document.getElementById("roleOrg");
+  sel.hidden = !MULTI;
+  if (MULTI) sel.replaceChildren(...DATA.orgs.map((o, i) =>
+    el("option", {value: String(i), selected: i === state.roleOrg}, o.label)));
 }
-// roles set per org in the config (read-only here)
-function renderOrgRoles() {
-  const lines = DATA.orgs.filter(o => o.roles.length || o.omitGlobalRoles).map(o =>
-    `${MULTI ? o.label : "This org"}: ${o.roles.join(", ") || "no roles"} ` +
-    (o.omitGlobalRoles ? "(only these; the list above doesn't apply)" : "(added to the list above)"));
-  const p = document.getElementById("orgRoles");
-  p.hidden = !lines.length;
-  p.replaceChildren(...lines.flatMap((l, i) => i ? [el("br"), l] : [l]));
-}
-function openRoles() {
-  const dlg = document.getElementById("rolesDlg");
+function openSettings(org) {
+  // default to the first org switched on unless the current one still is
+  if (typeof org === "number") state.roleOrg = org;
+  else if (state.hiddenOrgs.has(DATA.orgs[state.roleOrg].label)) {
+    const i = DATA.orgs.findIndex(o => !state.hiddenOrgs.has(o.label));
+    if (i >= 0) state.roleOrg = i;
+  }
+  renderOrgs(); renderRoles();
+  const dlg = document.getElementById("settingsDlg");
   if (!dlg.open) dlg.showModal();
-  document.getElementById("newrole").focus();
+  if (typeof org === "number") document.getElementById("newrole").focus();
 }
-function saveRoles() { LS.set("roles", state.roles); renderRoles(); render(); }
+function saveRoles() { LS.set("roles" + roleKey(state.roleOrg), state.roles[state.roleOrg]); renderRoles(); render(); }
 function applyView() {
   for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === state.view));
 }
@@ -957,7 +980,7 @@ async function copy(text) {
 /* ---------- bookmark export (Netscape format, importable by all browsers) ---------- */
 function exportBookmarks() {
   const linked = a => visible(a) && rolesFor(a).length;
-  if (!DATA.accounts.some(linked)) { toast(state.roles.length ? "No shown account has roles" : "Add a role first"); return; }
+  if (!DATA.accounts.some(linked)) { toast("No shown account has roles; add one above"); return; }
   const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const ts = Math.floor(Date.now() / 1000);
   const links = (accts, pad) => accts.flatMap(a => rolesFor(a).map(r =>
@@ -1008,8 +1031,9 @@ document.getElementById("addrole").addEventListener("submit", e => {
   const inp = document.getElementById("newrole");
   const name = inp.value.trim().replace(/^arn:[^:]+:iam::\d{12}:role\//, "");
   if (!name) return;
-  if (state.roles.includes(name)) { toast(`${name} already added`); return; }
-  state.roles.push(name); inp.value = ""; saveRoles();
+  const list = state.roles[state.roleOrg];
+  if (list.includes(name)) { toast(`${name} already added`); return; }
+  list.push(name); inp.value = ""; saveRoles();
 });
 document.getElementById("collapse").addEventListener("click", () => {
   const groups = [...document.querySelectorAll("details.group")];
@@ -1017,13 +1041,13 @@ document.getElementById("collapse").addEventListener("click", () => {
   groups.forEach(g => { g.open = open; });
 });
 document.getElementById("export").addEventListener("click", exportBookmarks);
-document.getElementById("rolesBtn").addEventListener("click", openRoles);
-document.getElementById("advBtn").addEventListener("click", () => document.getElementById("advDlg").showModal());
+document.getElementById("settingsBtn").addEventListener("click", () => openSettings());
+document.getElementById("roleOrg").addEventListener("change", e => { state.roleOrg = Number(e.target.value); renderRoles(); });
 for (const dlg of document.querySelectorAll("dialog")) {
   dlg.querySelector(".dlg-close").addEventListener("click", () => dlg.close());
   dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });  // backdrop
 }
-applyTheme(); applyView(); renderOrgs(); renderEnvs(); renderRoles(); renderOrgRoles(); render();
+applyTheme(); applyView(); renderOrgs(); renderEnvs(); renderRoles(); render();
 </script>
 </body>
 </html>
