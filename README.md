@@ -14,6 +14,7 @@ Each run writes a new render to `output/aws-bookmarks-<UTC timestamp>.html` (for
 - **Group by business domain or by org hierarchy.** Domain comes from the table's OU attribute. Accounts with no OU value, or with no table row, go under **Legacy**.
 - **Environment badges and filters** for Lab, Sbx, Dev, Tst, Prd, and Bil (billing). Common spellings are normalized (`sandbox` → Sbx, `test` → Tst, `production` → Prd, `billing` → Bil). The console header color is set per environment (Bil uses the default header).
 - **Roles stored in localStorage**, managed in the Roles dialog (header button): add, remove, or drag to reorder. Every account shows one switch-role link per role. On first load the page is seeded from `--roles`.
+- **Per-org roles.** An org's env file can add roles for its accounts only (`BM_ORG_ROLES`), and can leave out the global roles (`BM_ORG_OMIT_GLOBAL_ROLES=true`). With both set, `BM_ORG_ROLES` replaces the role list for that org. The Roles dialog lists these, but they can only be changed in the config.
 - **Light/dark mode** (dark by default), saved per browser.
 - **Fits the viewport.** Only the account list scrolls. Groups can be collapsed, and the collapsed state is remembered.
 - **Search** (press `/`) across short name, account name, ID, domain, environment, and OU path. Click an account ID to copy it.
@@ -58,7 +59,15 @@ Each org gets its own env file, holding that org's `AWS_PROFILE`, `BM_DDB_TABLE_
 
 Details:
 - **Org label.** Set it with `BM_ORG_LABEL` in the file. Otherwise it comes from the file name: `prod.env`, `.env.prod` and `prod/.env` all give `prod`. Labels must be unique and can't contain `:`.
-- **Page settings** (`BM_TITLE`, `BM_OUTPUT_DIR`) come from the first file. `BM_DEFAULT_ROLES` from every file is merged in order, without duplicates. Roles in the page apply to every org.
+- **Page settings** (`BM_TITLE`, `BM_OUTPUT_DIR`) come from the first file.
+- **Roles.** `BM_DEFAULT_ROLES` from every file is merged in order, without duplicates, into the global list.
+  - The global list (as edited in the page) applies to every org, unless an org sets `BM_ORG_OMIT_GLOBAL_ROLES=true`. That org's own `BM_DEFAULT_ROLES` is then left out of the global list too.
+  - `BM_ORG_ROLES` adds roles for that org only.
+  - Role ARNs are reduced to the role name, and duplicates are dropped.
+  - `BM_ORG_*` keys are read only from the org's own file, never from the shell.
+- **Org on/off.** The header has a chip per org. Click one to hide or show that org's accounts in every view, in the environment counts, and in the export.
+  - The choice is remembered in the browser (localStorage), so each browser profile can keep its own orgs switched on.
+  - Like roles, it's shared across renders opened from the same origin.
 - **Flags.** With several files, only the page flags (`--roles`, `--title`, `-o`) are allowed. Put everything else in the env files.
 - **Precedence.** Values in a named env file override the shell environment, so an exported `AWS_PROFILE` doesn't leak into every org.
   - A key that's present but blank (`AWS_PROFILE=`) means the default, not the shell's value.
@@ -91,6 +100,8 @@ Precedence: kwargs / CLI flags > a file named with `--env-file` > environment (i
 | `output_dir` | `BM_OUTPUT_DIR` | `output` | Directory for timestamped renders (created if missing) |
 | `include_inactive` | `BM_INCLUDE_INACTIVE` | `false` | Include suspended/closed accounts |
 | `org_label` | `BM_ORG_LABEL` | env file name | Org name on a multi-org page |
+| `org_roles` | `BM_ORG_ROLES` | — | Comma-separated roles added for this org's accounts only, after the global roles |
+| `omit_global_roles` | `BM_ORG_OMIT_GLOBAL_ROLES` | `false` | Show only `BM_ORG_ROLES` for this org, leaving out the global roles |
 
 Without `ddb_profile`, the table is read with the Organizations session if it's in the table's account, otherwise through `ddb_role_name` assumed from it. The generator refuses to run if the credentials end up in a different account from the ARN.
 
