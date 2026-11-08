@@ -83,6 +83,7 @@ SIGNIN_URLS = {
     "aws-cn": "https://signin.amazonaws.cn",
 }
 
+ROLE_ARN_PREFIX_RE = re.compile(r"^arn:[^:]+:iam::\d{12}:role/")  # same rule as the page's Add form
 TABLE_ARN_RE = re.compile(
     r"^arn:(?P<partition>[^:]+):dynamodb:(?P<region>[^:]+):(?P<account>\d{12}):table/(?P<table>[^/]+)$"
 )
@@ -103,6 +104,8 @@ SETTINGS = {
     "output_dir": ("BM_OUTPUT_DIR", "output"),
     "include_inactive": ("BM_INCLUDE_INACTIVE", "false"),
     "org_label": ("BM_ORG_LABEL", None),
+    "org_roles": ("BM_ORG_ROLES", None),
+    "omit_global_roles": ("BM_ORG_OMIT_GLOBAL_ROLES", "false"),
 }
 # Settings that apply to the whole page; all others are per org (per env file).
 PAGE_SETTINGS = {"roles", "title", "output_dir"}
@@ -136,10 +139,18 @@ def load_dotenv(path: Path = Path(".env")) -> None:
             os.environ.setdefault(key, value)
 
 
+def _role_list(value: Union[str, Sequence[str]]) -> List[str]:
+    """Comma string or list -> trimmed role names (role ARNs reduced to the name), no duplicates."""
+    items = value.split(",") if isinstance(value, str) else value
+    names = (ROLE_ARN_PREFIX_RE.sub("", str(r).strip()) for r in items)
+    return list(dict.fromkeys(n for n in names if n))
+
+
 def resolve_settings(kwargs: Dict[str, Any], env: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
     """kwargs > `env` (an explicitly named env file) > environment (incl. ./.env) > defaults.
 
-    A key present in `env` but blank means the default, not the shell's value."""
+    A key present in `env` but blank means the default, not the shell's value. BM_ORG_* keys
+    are per org, so with a named env file they come only from that file."""
     unknown = set(kwargs) - set(SETTINGS)
     if unknown:
         raise TypeError(f"Unknown setting(s): {', '.join(sorted(unknown))}")
@@ -147,12 +158,16 @@ def resolve_settings(kwargs: Dict[str, Any], env: Optional[Mapping[str, str]] = 
     for key, (env_var, default) in SETTINGS.items():
         value = kwargs.get(key)
         if value is None:
-            value = (env[env_var] if env is not None and env_var in env else os.getenv(env_var)) or default
+            if env is not None and (env_var in env or env_var.startswith("BM_ORG_")):
+                value = env.get(env_var) or default
+            else:
+                value = os.getenv(env_var) or default
         cfg[key] = value
-    if isinstance(cfg["roles"], str):
-        cfg["roles"] = [r.strip() for r in cfg["roles"].split(",") if r.strip()]
-    if isinstance(cfg["include_inactive"], str):
-        cfg["include_inactive"] = cfg["include_inactive"].lower() in ("1", "true", "yes")
+    for key in ("roles", "org_roles"):
+        cfg[key] = _role_list(cfg[key] or [])
+    for key in ("include_inactive", "omit_global_roles"):
+        if isinstance(cfg[key], str):
+            cfg[key] = cfg[key].lower() in ("1", "true", "yes")
     if not cfg["ddb_table_arn"]:
         raise ValueError("ddb_table_arn is required (BM_DDB_TABLE_ARN in .env, --ddb-table-arn, or kwarg)")
     m = TABLE_ARN_RE.match(cfg["ddb_table_arn"].strip())
@@ -453,6 +468,9 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
         label = cfg["org_label"]
         if multi:
             log.info("Org %s", label)
+        if cfg["omit_global_roles"] and not cfg["org_roles"]:
+            log.warning("Org %s omits the global roles but has no org roles; its accounts get no links",
+                        label or "(default)")
         try:
             data = fetch_org_data(cfg)
         except Exception as e:  # one bad org mustn't sink the others
@@ -471,7 +489,7 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
                              f"({data['orgId'] or 'shared accounts'}); check AWS_PROFILE in their env files")
         index = len(orgs)
         orgs.append({"label": label, "orgId": data["orgId"], "signinUrl": data["signinUrl"], "tree": data["tree"],
-                     "accountIds": ids})
+                     "roles": cfg["org_roles"], "omitGlobalRoles": cfg["omit_global_roles"], "accountIds": ids})
         for acct in data["accounts"]:
             acct["org"] = index
         accounts.extend(data["accounts"])
@@ -484,6 +502,9 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
     page = cfgs[0]
     roles: List[str] = []
     for cfg in cfgs:
+        if multi and cfg["omit_global_roles"]:
+            log.debug("Org %s omits the global roles; its BM_DEFAULT_ROLES aren't added to them", cfg["org_label"])
+            continue
         roles += [r for r in cfg["roles"] if r not in roles]
     now = datetime.now(timezone.utc)
     data = {
@@ -527,6 +548,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--attr-ou", help="DDB attribute: OU / business domain (default ou)")
     p.add_argument("--attr-environment", help="DDB attribute: environment (default environment)")
     p.add_argument("--roles", help="Comma-separated roles seeded into the page on first load")
+    p.add_argument("--org-roles", help="Comma-separated roles added for this org only (default BM_ORG_ROLES)")
+    p.add_argument("--omit-global-roles", action="store_const", const=True,
+                   help="Show only --org-roles for this org, not the global roles")
     p.add_argument("--title", help="Page title")
     p.add_argument("-o", "--output-dir", help="Directory for timestamped renders (default output)")
     p.add_argument("--include-inactive", action="store_const", const=True, help="Include suspended/closed accounts")
@@ -663,6 +687,7 @@ summary .mix i{font-style:normal;font-size:10px;padding:0 5px;border-radius:3px;
   <div class="seg" role="group" aria-label="Group by">
     <button data-view="domain">Business Domains</button><button data-view="org">Org Hierarchy</button>
   </div>
+  <div class="envs" id="orgs" role="group" aria-label="Organizations" hidden></div>
   <div class="envs" id="envs" role="group" aria-label="Environment filter"></div>
   <button class="btn" id="rolesBtn" title="Manage roles" aria-haspopup="dialog">Roles <b id="roleCount"></b></button>
   <button class="btn" id="collapse" title="Collapse / expand all">⇕</button>
@@ -676,6 +701,7 @@ summary .mix i{font-style:normal;font-size:10px;padding:0 5px;border-radius:3px;
     <ul class="roles" id="roles"></ul>
     <form class="addrole" id="addrole"><input id="newrole" placeholder="Role name or role ARN" aria-label="Role name"><button class="btn">Add</button></form>
     <p class="hint">Saved in this browser. Each account shows a switch-role link per role, in this order (drag to reorder). Defaults added to the config later appear automatically; roles you remove stay removed.</p>
+    <p class="hint" id="orgRoles" hidden></p>
   </div>
 </dialog>
 <dialog id="advDlg" aria-labelledby="advTitle">
@@ -720,6 +746,7 @@ const state = {
   roles: initRoles(),
   envs: new Set(LS.get("envs", [])),
   collapsed: new Set(LS.get("collapsed", [])),
+  hiddenOrgs: new Set(LS.get("hiddenOrgs", [])),  // org labels switched off in this browser
   q: "",
 };
 
@@ -745,6 +772,11 @@ function toast(msg) {
 }
 
 /* ---------- switch-role links ---------- */
+// global roles (this browser's list) plus the org's configured roles; an org can omit the global list
+function rolesFor(a) {
+  const o = DATA.orgs[a.org];
+  return o.omitGlobalRoles ? o.roles : [...state.roles, ...o.roles.filter(r => !state.roles.includes(r))];
+}
 function displayName(a, role) {
   return `${a.shortName} / ${role}`.slice(0, 64);
 }
@@ -755,7 +787,9 @@ function switchUrl(a, role) {
 }
 
 /* ---------- filtering ---------- */
+const orgOn = a => !MULTI || !state.hiddenOrgs.has(DATA.orgs[a.org].label);
 function visible(a) {
+  if (!orgOn(a)) return false;
   if (state.envs.size && !state.envs.has(a.env || "—")) return false;
   if (!state.q) return true;
   const hay = [a.shortName, a.name, a.id, a.domain, a.env, a.envRaw, a.email, ...a.orgPath,
@@ -765,8 +799,10 @@ function visible(a) {
 
 /* ---------- rendering ---------- */
 function card(a) {
-  const links = state.roles.length
-    ? state.roles.map(r => el("a", {href: switchUrl(a, r), target: "_blank", rel: "noopener", title: `Switch to ${r} in ${a.id}`}, r))
+  const roles = rolesFor(a);
+  const links = roles.length
+    ? roles.map(r => el("a", {href: switchUrl(a, r), target: "_blank", rel: "noopener", title: `Switch to ${r} in ${a.id}`}, r))
+    : DATA.orgs[a.org].omitGlobalRoles ? [el("span", {class: "none"}, "No roles configured for this org")]
     : [el("button", {class: "linkish", onclick: openRoles}, "Add a role to get links")];
   return el("div", {class: "card", style: `--c:${envColor(a.env)}`},
     el("div", {class: "ctop"},
@@ -857,13 +893,26 @@ function render() {
 }
 function renderEnvs() {
   const counts = {};
-  for (const a of DATA.accounts) counts[a.env || "—"] = (counts[a.env || "—"] || 0) + 1;
+  for (const a of DATA.accounts) if (orgOn(a)) counts[a.env || "—"] = (counts[a.env || "—"] || 0) + 1;
   const box = document.getElementById("envs");
   box.replaceChildren(...[...ENV_ORDER, "—"].filter(e => counts[e] || ENV_ORDER.includes(e) || state.envs.has(e)).map(e =>
     el("button", {class: "chip", style: `--c:${envColor(e)}`, "aria-pressed": String(state.envs.has(e)),
       title: e === "—" ? "No environment set" : `Show only ${e} (multi-select)`,
       onclick: () => { state.envs.has(e) ? state.envs.delete(e) : state.envs.add(e); LS.set("envs", [...state.envs]); renderEnvs(); render(); }},
       el("span", {class: "dot"}), e, el("b", {}, counts[e] || 0))));
+}
+// combined page: switch orgs on/off; remembered per browser (e.g. one browser profile per org)
+function renderOrgs() {
+  const box = document.getElementById("orgs");
+  box.hidden = !MULTI;
+  if (!MULTI) return;
+  box.replaceChildren(...DATA.orgs.map((o, i) => el("button", {class: "chip", style: "--c:var(--accent)",
+      "aria-pressed": String(!state.hiddenOrgs.has(o.label)), title: `Show or hide ${o.label} (remembered in this browser)`,
+      onclick: () => {
+        state.hiddenOrgs.has(o.label) ? state.hiddenOrgs.delete(o.label) : state.hiddenOrgs.add(o.label);
+        LS.set("hiddenOrgs", [...state.hiddenOrgs]); renderOrgs(); renderEnvs(); render();
+      }},
+    el("span", {class: "dot"}), o.label, el("b", {}, DATA.accounts.filter(a => a.org === i).length))));
 }
 function renderRoles() {
   const ul = document.getElementById("roles");
@@ -877,6 +926,15 @@ function renderRoles() {
     el("span", {title: r}, r),
     el("button", {title: `Remove ${r}`, "aria-label": `Remove ${r}`, onclick: () => { state.roles.splice(i, 1); saveRoles(); }}, "×"))));
   document.getElementById("roleCount").textContent = state.roles.length;
+}
+// roles set per org in the config (read-only here)
+function renderOrgRoles() {
+  const lines = DATA.orgs.filter(o => o.roles.length || o.omitGlobalRoles).map(o =>
+    `${MULTI ? o.label : "This org"}: ${o.roles.join(", ") || "no roles"} ` +
+    (o.omitGlobalRoles ? "(only these; the list above doesn't apply)" : "(added to the list above)"));
+  const p = document.getElementById("orgRoles");
+  p.hidden = !lines.length;
+  p.replaceChildren(...lines.flatMap((l, i) => i ? [el("br"), l] : [l]));
 }
 function openRoles() {
   const dlg = document.getElementById("rolesDlg");
@@ -898,26 +956,28 @@ async function copy(text) {
 
 /* ---------- bookmark export (Netscape format, importable by all browsers) ---------- */
 function exportBookmarks() {
-  if (!state.roles.length) { toast("Add a role first"); return; }
+  const linked = a => visible(a) && rolesFor(a).length;
+  if (!DATA.accounts.some(linked)) { toast(state.roles.length ? "No shown account has roles" : "Add a role first"); return; }
   const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const ts = Math.floor(Date.now() / 1000);
-  const links = (accts, pad) => accts.flatMap(a => state.roles.map(r =>
+  const links = (accts, pad) => accts.flatMap(a => rolesFor(a).map(r =>
     `${pad}<DT><A HREF="${esc(switchUrl(a, r))}" ADD_DATE="${ts}">${esc(`${a.shortName} (${a.env || "—"}) · ${r}`)}</A>`));
   const folder = (name, inner, pad) => [`${pad}<DT><H3 ADD_DATE="${ts}">${esc(name)}</H3>`, `${pad}<DL><p>`, ...inner, `${pad}</DL><p>`];
   let body = [];
   const domainFolders = (accts, pad) => domainGroups(accts).flatMap(([d, list]) => folder(d, links(list, pad + "    "), pad));
   if (state.view === "org") {
     const walk = (node, pad, name) => {
-      const own = node.accounts.map(id => byId[id]).filter(a => a && visible(a)).sort(byEnvThenName);
+      const own = node.accounts.map(id => byId[id]).filter(a => a && linked(a)).sort(byEnvThenName);
       const kids = node.children.map(c => walk(c, pad + "    ", c.name)).filter(k => k.length);
       if (!own.length && !kids.length) return [];
       return folder(name, [...links(own, pad + "    "), ...kids.flat()], pad);
     };
     body = DATA.orgs.flatMap(o => walk(o.tree, "    ", MULTI ? o.label : o.tree.name));
   } else if (MULTI) {
-    body = perOrg((o, accts) => folder(o.label, domainFolders(accts, "        "), "    ")).flat();
+    body = perOrg((o, accts) => accts.some(linked) ? folder(o.label, domainFolders(accts.filter(linked), "        "), "    ") : null)
+      .filter(Boolean).flat();
   } else {
-    body = domainFolders(DATA.accounts.filter(visible), "    ");
+    body = domainFolders(DATA.accounts.filter(linked), "    ");
   }
   const html = ["<!DOCTYPE NETSCAPE-Bookmark-file-1>",
     '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
@@ -963,7 +1023,7 @@ for (const dlg of document.querySelectorAll("dialog")) {
   dlg.querySelector(".dlg-close").addEventListener("click", () => dlg.close());
   dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });  // backdrop
 }
-applyTheme(); applyView(); renderEnvs(); renderRoles(); render();
+applyTheme(); applyView(); renderOrgs(); renderEnvs(); renderRoles(); renderOrgRoles(); render();
 </script>
 </body>
 </html>
