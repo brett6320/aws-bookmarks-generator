@@ -15,7 +15,7 @@ Each run writes a new render to `output/aws-bookmarks-<UTC timestamp>.html` (for
 - **Environment badges and filters** for Lab, Sbx, Dev, Tst, Prd, and Bil (billing). Common spellings are normalized (`sandbox` → Sbx, `test` → Tst, `production` → Prd, `billing` → Bil). The console header color is set per environment (Bil uses the default header).
 - **Settings dialog** (header button) holds org on/off (combined page), roles, and bookmark export.
 - **Roles per org, stored in localStorage.** In Settings, add, remove, or drag to reorder; on a combined page, pick the org first. Every account shows one switch-role link per role of its org.
-  - Each org's list starts from its config roles: `BM_DEFAULT_ROLES` plus `BM_ORG_ROLES`, or only `BM_ORG_ROLES` when `BM_ORG_OMIT_GLOBAL_ROLES=true`.
+  - Each org's list starts from its config roles: `BG_DEFAULT_ROLES` plus `BG_ORG_ROLES`, or only `BG_ORG_ROLES` when `BG_ORG_OMIT_GLOBAL_ROLES=true`.
   - Config roles added later are appended once, and roles you removed stay removed.
   - A browser list saved before per-org roles carries over to orgs that don't omit the global roles.
 - **Light/dark mode** (dark by default), saved per browser.
@@ -28,7 +28,7 @@ Each run writes a new render to `output/aws-bookmarks-<UTC timestamp>.html` (for
 ```bash
 pip install boto3
 
-# Table from BM_DDB_TABLE_ARN in .env; read via a role assumed from the org profile
+# Table from BG_DDB_TABLE_ARN in .env; read via a role assumed from the org profile
 python aws_bookmarks.py --profile org-mgmt --ddb-role-name BookmarksReader
 
 # Table read with its own profile, ARN given on the command line
@@ -52,7 +52,7 @@ generate(env_files=["prod.env", "lab.env"])                    # combined multi-
 
 ## Multiple orgs
 
-Each org gets its own env file, holding that org's `AWS_PROFILE`, `BM_DDB_TABLE_ARN` (one table per org), and any other per-org settings from the table below.
+Each org gets its own env file, holding that org's `AWS_PROFILE`, `BG_DDB_TABLE_ARN` (one table per org), and any other per-org settings from the table below.
 
 - **One env file** (`--env-file prod.env`), or none (`./.env`), gives a single-org page, `output/aws-bookmarks-<timestamp>.html`. It's the same page as before.
 - **Two or more** give one combined page, `output/aws-bookmarks-all-<timestamp>.html`.
@@ -61,14 +61,14 @@ Each org gets its own env file, holding that org's `AWS_PROFILE`, `BM_DDB_TABLE_
   - Bookmark export puts each org in its own folder.
 
 Details:
-- **Org label.** Set it with `BM_ORG_LABEL` in the file. Otherwise it comes from the file name: `prod.env`, `.env.prod` and `prod/.env` all give `prod`. Labels must be unique and can't contain `:`.
-- **Page settings** (`BM_TITLE`, `BM_OUTPUT_DIR`) come from the first file.
-- **Roles.** `BM_DEFAULT_ROLES` from every file is merged in order, without duplicates, into the global list.
-  - Each org's starting list is the global roles plus its `BM_ORG_ROLES`. An org that sets `BM_ORG_OMIT_GLOBAL_ROLES=true` starts from `BM_ORG_ROLES` only, and its own `BM_DEFAULT_ROLES` is left out of the global roles.
+- **Org label.** Set it with `BG_ORG_LABEL` in the file. Otherwise it comes from the file name: `prod.env`, `.env.prod` and `prod/.env` all give `prod`. Labels must be unique and can't contain `:`.
+- **Page settings** (`BG_TITLE`, `BG_OUTPUT_DIR`) come from the first file.
+- **Roles.** `BG_DEFAULT_ROLES` from every file is merged in order, without duplicates, into the global list.
+  - Each org's starting list is the global roles plus its `BG_ORG_ROLES`. An org that sets `BG_ORG_OMIT_GLOBAL_ROLES=true` starts from `BG_ORG_ROLES` only, and its own `BG_DEFAULT_ROLES` is left out of the global roles.
   - After that, each org's list is edited separately in Settings.
-  - `BM_ORG_ROLES` adds roles for that org only.
+  - `BG_ORG_ROLES` adds roles for that org only.
   - Role ARNs are reduced to the role name, and duplicates are dropped.
-  - `BM_ORG_*` keys are read only from the org's own file, never from the shell.
+  - `BG_ORG_*` keys are read only from the org's own file, never from the shell.
 - **Org on/off.** Settings has a switch per org. Switching one off hides that org's accounts in every view, in the environment counts, and in the export.
   - The choice is remembered in the browser (localStorage), so each browser profile can keep its own orgs switched on.
   - Like roles, it's shared across renders opened from the same origin.
@@ -86,26 +86,26 @@ Details:
 
 ## Configuration
 
-Precedence: kwargs / CLI flags > a file named with `--env-file` > environment (including `.env` in cwd, parsed natively) > defaults. Copy `.env.example` to `.env`, or to one file per org.
+Precedence: kwargs / CLI flags > a file named with `--env-file` > environment (including `.env` in cwd, parsed natively) > defaults. Copy `.env.example` to `.env`, or to one file per org. Settings used to be prefixed `BM_`. Old `BM_*` names are now ignored, with a warning naming the `BG_*` replacement.
 
 | kwarg / flag | Env var | Default | Description |
 |---|---|---|---|
 | `profile` | `AWS_PROFILE` | default chain | Profile for Organizations (management or delegated-admin account) |
 | `region` | `AWS_REGION` | `us-east-1` | Region; also determines partition / sign-in URL |
-| `ddb_table_arn` | `BM_DDB_TABLE_ARN` | **required** | Metadata table ARN; table name, account and region come from it |
-| `ddb_profile` | `BM_DDB_PROFILE` | — | Profile for the table's account (takes precedence) |
-| `ddb_role_name` | `BM_DDB_ROLE_NAME` | `OrganizationAccountAccessRole` | Role assumed in the table's account when no `ddb_profile` is set and `profile` is in a different account |
-| `attr_account_id` | `BM_ATTR_ACCOUNT_ID` | `accountNumber` | Account number attribute (string or number; zero-padded to 12) |
-| `attr_short_name` | `BM_ATTR_SHORT_NAME` | `accountShortCode` | Short name (falls back to the org account name) |
-| `attr_ou` | `BM_ATTR_OU` | `ou` | Business domain (empty/missing → Legacy) |
-| `attr_environment` | `BM_ATTR_ENVIRONMENT` | `environment` | Environment |
-| `roles` | `BM_DEFAULT_ROLES` | `ReadOnly,Administrator` | Default roles, comma-separated in display order. Seed each browser's list; roles added later are appended, roles a user removed stay removed |
-| `title` | `BM_TITLE` | `AWS Accounts` | Page title |
-| `output_dir` | `BM_OUTPUT_DIR` | `output` | Directory for timestamped renders (created if missing) |
-| `include_inactive` | `BM_INCLUDE_INACTIVE` | `false` | Include suspended/closed accounts |
-| `org_label` | `BM_ORG_LABEL` | env file name | Org name on a multi-org page |
-| `org_roles` | `BM_ORG_ROLES` | — | Comma-separated roles added for this org's accounts only, after the global roles |
-| `omit_global_roles` | `BM_ORG_OMIT_GLOBAL_ROLES` | `false` | Show only `BM_ORG_ROLES` for this org, leaving out the global roles |
+| `ddb_table_arn` | `BG_DDB_TABLE_ARN` | **required** | Metadata table ARN; table name, account and region come from it |
+| `ddb_profile` | `BG_DDB_PROFILE` | — | Profile for the table's account (takes precedence) |
+| `ddb_role_name` | `BG_DDB_ROLE_NAME` | `OrganizationAccountAccessRole` | Role assumed in the table's account when no `ddb_profile` is set and `profile` is in a different account |
+| `attr_account_id` | `BG_ATTR_ACCOUNT_ID` | `accountNumber` | Account number attribute (string or number; zero-padded to 12) |
+| `attr_short_name` | `BG_ATTR_SHORT_NAME` | `accountShortCode` | Short name (falls back to the org account name) |
+| `attr_ou` | `BG_ATTR_OU` | `ou` | Business domain (empty/missing → Legacy) |
+| `attr_environment` | `BG_ATTR_ENVIRONMENT` | `environment` | Environment |
+| `roles` | `BG_DEFAULT_ROLES` | `ReadOnly,Administrator` | Default roles, comma-separated in display order. Seed each browser's list; roles added later are appended, roles a user removed stay removed |
+| `title` | `BG_TITLE` | `AWS Accounts` | Page title |
+| `output_dir` | `BG_OUTPUT_DIR` | `output` | Directory for timestamped renders (created if missing) |
+| `include_inactive` | `BG_INCLUDE_INACTIVE` | `false` | Include suspended/closed accounts |
+| `org_label` | `BG_ORG_LABEL` | env file name | Org name on a multi-org page |
+| `org_roles` | `BG_ORG_ROLES` | — | Comma-separated roles added for this org's accounts only, after the global roles |
+| `omit_global_roles` | `BG_ORG_OMIT_GLOBAL_ROLES` | `false` | Show only `BG_ORG_ROLES` for this org, leaving out the global roles |
 
 Without `ddb_profile`, the table is read with the Organizations session if it's in the table's account, otherwise through `ddb_role_name` assumed from it. The generator refuses to run if the credentials end up in a different account from the ARN.
 

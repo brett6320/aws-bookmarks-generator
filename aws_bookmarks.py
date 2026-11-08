@@ -14,7 +14,7 @@ multiple versions can be compared side by side.
 The only third-party import is boto3. `truststore` is used if present (OS PKI
 store for TLS) but is not required.
 
-The table is configured by ARN (BM_DDB_TABLE_ARN in .env, or --ddb-table-arn); its
+The table is configured by ARN (BG_DDB_TABLE_ARN in .env, or --ddb-table-arn); its
 name, account and region come from the ARN. It is read with --ddb-profile if given,
 else with the Organizations profile (same account) or a role assumed from it.
 
@@ -92,20 +92,20 @@ TABLE_ARN_RE = re.compile(
 SETTINGS = {
     "profile": ("AWS_PROFILE", None),
     "region": ("AWS_REGION", "us-east-1"),
-    "ddb_table_arn": ("BM_DDB_TABLE_ARN", None),
-    "ddb_profile": ("BM_DDB_PROFILE", None),
-    "ddb_role_name": ("BM_DDB_ROLE_NAME", "OrganizationAccountAccessRole"),
-    "attr_account_id": ("BM_ATTR_ACCOUNT_ID", "accountNumber"),
-    "attr_short_name": ("BM_ATTR_SHORT_NAME", "accountShortCode"),
-    "attr_ou": ("BM_ATTR_OU", "ou"),
-    "attr_environment": ("BM_ATTR_ENVIRONMENT", "environment"),
-    "roles": ("BM_DEFAULT_ROLES", "ReadOnly,Administrator"),
-    "title": ("BM_TITLE", "AWS Accounts"),
-    "output_dir": ("BM_OUTPUT_DIR", "output"),
-    "include_inactive": ("BM_INCLUDE_INACTIVE", "false"),
-    "org_label": ("BM_ORG_LABEL", None),
-    "org_roles": ("BM_ORG_ROLES", None),
-    "omit_global_roles": ("BM_ORG_OMIT_GLOBAL_ROLES", "false"),
+    "ddb_table_arn": ("BG_DDB_TABLE_ARN", None),
+    "ddb_profile": ("BG_DDB_PROFILE", None),
+    "ddb_role_name": ("BG_DDB_ROLE_NAME", "OrganizationAccountAccessRole"),
+    "attr_account_id": ("BG_ATTR_ACCOUNT_ID", "accountNumber"),
+    "attr_short_name": ("BG_ATTR_SHORT_NAME", "accountShortCode"),
+    "attr_ou": ("BG_ATTR_OU", "ou"),
+    "attr_environment": ("BG_ATTR_ENVIRONMENT", "environment"),
+    "roles": ("BG_DEFAULT_ROLES", "ReadOnly,Administrator"),
+    "title": ("BG_TITLE", "AWS Accounts"),
+    "output_dir": ("BG_OUTPUT_DIR", "output"),
+    "include_inactive": ("BG_INCLUDE_INACTIVE", "false"),
+    "org_label": ("BG_ORG_LABEL", None),
+    "org_roles": ("BG_ORG_ROLES", None),
+    "omit_global_roles": ("BG_ORG_OMIT_GLOBAL_ROLES", "false"),
 }
 # Settings that apply to the whole page; all others are per org (per env file).
 PAGE_SETTINGS = {"roles", "title", "output_dir"}
@@ -149,16 +149,22 @@ def _role_list(value: Union[str, Sequence[str]]) -> List[str]:
 def resolve_settings(kwargs: Dict[str, Any], env: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
     """kwargs > `env` (an explicitly named env file) > environment (incl. ./.env) > defaults.
 
-    A key present in `env` but blank means the default, not the shell's value. BM_ORG_* keys
+    A key present in `env` but blank means the default, not the shell's value. BG_ORG_* keys
     are per org, so with a named env file they come only from that file."""
     unknown = set(kwargs) - set(SETTINGS)
     if unknown:
         raise TypeError(f"Unknown setting(s): {', '.join(sorted(unknown))}")
+    # settings were prefixed BM_ before; they're ignored now, so say so
+    legacy = sorted(k for k in set(env or {}) | set(os.environ)
+                    if k.startswith("BM_") and "BG_" + k[3:] in {v for v, _ in SETTINGS.values()})
+    if legacy:
+        log.warning("Ignoring %s: settings are now prefixed BG_ (rename to %s)",
+                    ", ".join(legacy), ", ".join("BG_" + k[3:] for k in legacy))
     cfg: Dict[str, Any] = {}
     for key, (env_var, default) in SETTINGS.items():
         value = kwargs.get(key)
         if value is None:
-            if env is not None and (env_var in env or env_var.startswith("BM_ORG_")):
+            if env is not None and (env_var in env or env_var.startswith("BG_ORG_")):
                 value = env.get(env_var) or default
             else:
                 value = os.getenv(env_var) or default
@@ -169,7 +175,7 @@ def resolve_settings(kwargs: Dict[str, Any], env: Optional[Mapping[str, str]] = 
         if isinstance(cfg[key], str):
             cfg[key] = cfg[key].lower() in ("1", "true", "yes")
     if not cfg["ddb_table_arn"]:
-        raise ValueError("ddb_table_arn is required (BM_DDB_TABLE_ARN in .env, --ddb-table-arn, or kwarg)")
+        raise ValueError("ddb_table_arn is required (BG_DDB_TABLE_ARN in .env, --ddb-table-arn, or kwarg)")
     m = TABLE_ARN_RE.match(cfg["ddb_table_arn"].strip())
     if not m:
         raise ValueError(f"Not a DynamoDB table ARN: {cfg['ddb_table_arn']}")
@@ -294,7 +300,7 @@ def get_ddb_session(cfg: Dict[str, Any], org_session: boto3.Session) -> boto3.Se
     actual = _caller_account(session)
     if actual != account:
         raise RuntimeError(f"DynamoDB credentials are for account {actual}, but the table is in {account}; "
-                           "fix --ddb-profile / BM_DDB_PROFILE")
+                           "fix --ddb-profile / BG_DDB_PROFILE")
     return session
 
 
@@ -456,10 +462,10 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
         labels = [cfg["org_label"] for cfg in cfgs]
         bad = sorted({label for label in labels if ":" in label})
         if bad:
-            raise ValueError(f"Org label(s) {', '.join(bad)} contain ':'; set BM_ORG_LABEL without one")
+            raise ValueError(f"Org label(s) {', '.join(bad)} contain ':'; set BG_ORG_LABEL without one")
         dupes = sorted({label for label in labels if labels.count(label) > 1})
         if dupes:
-            raise ValueError(f"Duplicate org label(s) {', '.join(dupes)}; set BM_ORG_LABEL in each env file")
+            raise ValueError(f"Duplicate org label(s) {', '.join(dupes)}; set BG_ORG_LABEL in each env file")
 
     orgs: List[Dict[str, Any]] = []
     accounts: List[Dict[str, Any]] = []
@@ -504,7 +510,7 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
     roles: List[str] = []
     for cfg in cfgs:
         if multi and cfg["omit_global_roles"]:
-            log.debug("Org %s omits the global roles; its BM_DEFAULT_ROLES aren't added to them", cfg["org_label"])
+            log.debug("Org %s omits the global roles; its BG_DEFAULT_ROLES aren't added to them", cfg["org_label"])
             continue
         roles += [r for r in cfg["roles"] if r not in roles]
     now = datetime.now(timezone.utc)
@@ -541,7 +547,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="Env file for one org (default ./.env); repeat for a combined multi-org page")
     p.add_argument("--profile", help="Profile for the Organizations (management/delegated admin) account")
     p.add_argument("--region", help="Region (default us-east-1)")
-    p.add_argument("--ddb-table-arn", help="ARN of the account metadata table (default BM_DDB_TABLE_ARN)")
+    p.add_argument("--ddb-table-arn", help="ARN of the account metadata table (default BG_DDB_TABLE_ARN)")
     p.add_argument("--ddb-profile", help="Profile for the table's account (default: --profile, or assume --ddb-role-name)")
     p.add_argument("--ddb-role-name", help="Role assumed in the table's account when --ddb-profile isn't set")
     p.add_argument("--attr-account-id", help="DDB attribute: account number (default accountNumber)")
@@ -549,7 +555,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--attr-ou", help="DDB attribute: OU / business domain (default ou)")
     p.add_argument("--attr-environment", help="DDB attribute: environment (default environment)")
     p.add_argument("--roles", help="Comma-separated roles seeded into the page on first load")
-    p.add_argument("--org-roles", help="Comma-separated roles added for this org only (default BM_ORG_ROLES)")
+    p.add_argument("--org-roles", help="Comma-separated roles added for this org only (default BG_ORG_ROLES)")
     p.add_argument("--omit-global-roles", action="store_const", const=True,
                    help="Show only --org-roles for this org, not the global roles")
     p.add_argument("--title", help="Page title")
@@ -741,8 +747,8 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem("awsbm." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem("awsbm." + k, JSON.stringify(v)); } catch (e) {} },
 };
-// Each org keeps its own role list in this browser, seeded from its config roles: BM_DEFAULT_ROLES
-// plus BM_ORG_ROLES, or only BM_ORG_ROLES when the org omits the global roles. Config roles added
+// Each org keeps its own role list in this browser, seeded from its config roles: BG_DEFAULT_ROLES
+// plus BG_ORG_ROLES, or only BG_ORG_ROLES when the org omits the global roles. Config roles added
 // later are appended once; roles the user removed stay removed (tracked in awsbm.seenDefaults:<org>).
 const configRoles = o => o.omitGlobalRoles ? o.roles
   : [...DATA.defaultRoles, ...o.roles.filter(r => !DATA.defaultRoles.includes(r))];
