@@ -76,6 +76,10 @@ ENV_ALIASES = {
     "billing": "Bil",
 }
 LEGACY_DOMAIN = "Legacy"
+# Legacy accounts that are Dev, or have "sandbox" in their name, are sandboxes in practice. The name
+# rule never downgrades these (their console colour is a safety cue); they're logged instead.
+LEGACY_SANDBOX_ENV = "Sbx"
+LEGACY_SANDBOX_KEEP = {"Prd", "Bil"}
 INACTIVE_STATES = {"SUSPENDED", "PENDING_CLOSURE", "CLOSED"}
 SIGNIN_URLS = {
     "aws": "https://signin.aws.amazon.com",
@@ -341,8 +345,16 @@ def _blank(value: Any) -> bool:
     return value is None or not str(value).strip()
 
 
+def _legacy_sandbox(domain: str, env: Optional[str], *names: str) -> bool:
+    """Legacy (any case) and Dev, or named *sandbox* unless it's Prd/Bil."""
+    if domain.lower() != LEGACY_DOMAIN.lower():
+        return False
+    return env == "Dev" or (env not in LEGACY_SANDBOX_KEEP and any("sandbox" in n.lower() for n in names))
+
+
 def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     merged = []
+    remapped = 0
     for acct_id, info in org["accounts"].items():
         m = meta.get(acct_id, {})
         ou = (str(m["ou"]).strip() if m.get("ou") not in (None, "") else "")
@@ -350,20 +362,33 @@ def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]]) -> List[Dict[str
         env = normalize_env(env_raw)
         if env_raw not in (None, "") and env is None:
             log.warning("Account %s: unrecognised environment %r", acct_id, env_raw)
+        # short codes are lowercase by convention; the account-name fallback keeps its case
+        short = str(m["shortName"]).strip().lower() if not _blank(m.get("shortName")) else info["name"]
+        domain = ou or LEGACY_DOMAIN
+        mapped = env != LEGACY_SANDBOX_ENV and _legacy_sandbox(domain, env, info["name"], short)
+        if not mapped and env in LEGACY_SANDBOX_KEEP and domain.lower() == LEGACY_DOMAIN.lower() \
+                and any("sandbox" in n.lower() for n in (info["name"], short)):
+            log.warning("Account %s (%s): Legacy, named like a sandbox but %s in the table; left as %s",
+                        acct_id, info["name"], env, env)
+        if mapped:
+            log.debug("Account %s (%s): Legacy %s -> %s", acct_id, info["name"], env or "no environment", LEGACY_SANDBOX_ENV)
+            env, remapped = LEGACY_SANDBOX_ENV, remapped + 1
         merged.append(
             {
                 **info,
-                # short codes are lowercase by convention; the account-name fallback keeps its case
-                "shortName": str(m["shortName"]).strip().lower() if not _blank(m.get("shortName")) else info["name"],
-                "domain": ou or LEGACY_DOMAIN,
+                "shortName": short,
+                "domain": domain,
                 "env": env,
                 "envRaw": None if env_raw is None else str(env_raw),
+                "envMapped": mapped,
                 "hasMetadata": bool(m),
             }
         )
     orphans = set(meta) - set(org["accounts"])
     if orphans:
         log.warning("%d DDB entries match no active org account: %s", len(orphans), ", ".join(sorted(orphans)[:10]))
+    if remapped:
+        log.info("%d %s accounts (Dev, or \"sandbox\" in the name) shown as %s", remapped, LEGACY_DOMAIN, LEGACY_SANDBOX_ENV)
     missing = sum(1 for a in merged if not a["hasMetadata"])
     if missing:
         log.warning("%d org accounts have no DDB metadata (shown as %s)", missing, LEGACY_DOMAIN)
@@ -865,7 +890,7 @@ function card(a) {
   return el("div", {class: "card", style: `--c:${envColor(a.env)}`},
     el("div", {class: "ctop"},
       el("strong", {title: a.shortName}, a.shortName),
-      el("span", {class: "badge", title: a.envRaw || "No environment"}, a.env || "—")),
+      el("span", {class: "badge", title: (a.envRaw || "No environment") + (a.envMapped ? ` (shown as ${a.env}: Legacy dev/sandbox account)` : "")}, a.env || "—")),
     el("div", {class: "cmeta"},
       el("span", {class: "name", title: `${a.name}\n${a.email}\n${a.orgPath.join(" / ") || "Root"}`}, a.name),
       el("button", {class: "acct", title: "Copy account ID", onclick: () => copy(a.id)}, a.id)),
