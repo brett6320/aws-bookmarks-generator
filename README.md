@@ -12,6 +12,8 @@ Each run writes a new render to `output/aws-bookmarks-<UTC timestamp>.html` (for
 
 - **One org or several.** Pass one env file per org and the page shows each org as a top-level group (see [Multiple orgs](#multiple-orgs)).
 - **Group by business domain or by org hierarchy.** Domain comes from the table's OU attribute. Accounts with no OU value, or with no table row, go under **Legacy**.
+- **Business domain filter.** A header dropdown shows one business domain (the table's OU attribute) at a time, with Legacy last and an account count per domain. It applies to both views, the shown-accounts count, and the export, and the choice is remembered in the browser. Counts on the dropdown and the environment chips take the other filters and search into account. If every account is Legacy (no OU values), the dropdown is hidden.
+  - Filters are shared across renders like roles, so when filters hide everything the page names them and offers **Clear filters**. On a combined page, the list merges domains by name across the orgs that are switched on.
 - **Environment badges and filters** for Lab, Sbx, Dev, Tst, Prd, and Bil (billing). Common spellings are normalized (`sandbox` → Sbx, `test` → Tst, `production` → Prd, `billing` → Bil). The console header color is set per environment (Bil uses the default header).
 - **Settings dialog** (header button) holds org on/off (combined page), roles, and bookmark export.
 - **Roles per org, stored in localStorage.** In Settings, add, remove, or drag to reorder; on a combined page, pick the org first. Every account shows one switch-role link per role of its org.
@@ -69,7 +71,7 @@ Details:
   - `BG_ORG_ROLES` adds roles for that org only.
   - Role ARNs are reduced to the role name, and duplicates are dropped.
   - `BG_ORG_*` keys are read only from the org's own file, never from the shell.
-- **Org on/off.** Settings has a switch per org. Switching one off hides that org's accounts in every view, in the environment counts, and in the export.
+- **Org on/off.** Settings has a switch per org. Switching one off hides that org's accounts in every view, in the environment and business domain counts, and in the export.
   - The choice is remembered in the browser (localStorage), so each browser profile can keep its own orgs switched on.
   - Like roles, it's shared across renders opened from the same origin.
 - **Flags.** With several files, only the page flags (`--roles`, `--title`, `-o`) are allowed. Put everything else in the env files.

@@ -610,7 +610,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--text);font:13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
-button,input{font:inherit;color:inherit}
+button,input,select{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex:none}
 .brand{display:flex;flex-direction:column;margin-right:auto;min-width:0}
@@ -621,6 +621,8 @@ header{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:10px
 .seg button{border:0;background:transparent;padding:5px 10px;cursor:pointer;color:var(--muted)}
 .seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-t)}
 .envs{display:flex;gap:4px;flex-wrap:wrap}
+.domsel{max-width:200px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text)}
+.domsel.on{border-color:var(--accent)}
 .chip{border:1px solid var(--line);background:transparent;border-radius:999px;padding:3px 9px;cursor:pointer;display:inline-flex;gap:5px;align-items:center;color:var(--muted)}
 .chip .dot{width:8px;height:8px;border-radius:50%;background:var(--c)}
 .chip[aria-pressed="true"]{border-color:var(--c);color:var(--text);background:color-mix(in srgb,var(--c) 18%,transparent)}
@@ -701,6 +703,7 @@ summary .mix i{font-style:normal;font-size:10px;padding:0 5px;border-radius:3px;
   <div class="seg" role="group" aria-label="Group by">
     <button data-view="domain">Business Domains</button><button data-view="org">Org Hierarchy</button>
   </div>
+  <select class="domsel" id="domain" aria-label="Business domain filter" title="Show one business domain"></select>
   <div class="envs" id="envs" role="group" aria-label="Environment filter"></div>
   <button class="btn" id="collapse" title="Collapse / expand all">⇕</button>
   <button class="btn" id="theme" title="Toggle light/dark"></button>
@@ -775,6 +778,7 @@ const state = {
   roles: DATA.orgs.map(initRoles),  // per org, indexed like DATA.orgs
   roleOrg: 0,                       // org whose list the Roles dialog edits
   envs: new Set(LS.get("envs", [])),
+  domain: String(LS.get("domain", "") || ""),  // business domain filter; "" = all
   collapsed: new Set(LS.get("collapsed", [])),
   hiddenOrgs: new Set(LS.get("hiddenOrgs", [])),  // org labels switched off in this browser
   q: "",
@@ -814,9 +818,11 @@ function switchUrl(a, role) {
 
 /* ---------- filtering ---------- */
 const orgOn = a => !MULTI || !state.hiddenOrgs.has(DATA.orgs[a.org].label);
-function visible(a) {
+// skip: "env" or "domain" to leave that filter out (faceted counts on the filter controls)
+function visible(a, skip) {
   if (!orgOn(a)) return false;
-  if (state.envs.size && !state.envs.has(a.env || "—")) return false;
+  if (skip !== "env" && state.envs.size && !state.envs.has(a.env || "—")) return false;
+  if (skip !== "domain" && state.domain && a.domain !== state.domain) return false;
   if (!state.q) return true;
   const hay = [a.shortName, a.name, a.id, a.domain, a.env, a.envRaw, a.email, ...a.orgPath,
     MULTI ? DATA.orgs[a.org].label : ""].join(" ").toLowerCase();
@@ -909,22 +915,52 @@ function render() {
   const main = document.getElementById("main");
   const scroll = main.scrollTop;
   const nodes = state.view === "org" ? renderOrg() : renderDomain();
-  main.replaceChildren(...(nodes.length ? nodes : [el("div", {class: "empty"}, "No accounts match.")]));
+  main.replaceChildren(...(nodes.length ? nodes : [emptyState()]));
   main.scrollTop = scroll;
   const shown = DATA.accounts.filter(visible).length;
   document.getElementById("sub").textContent =
     `${shown} of ${DATA.accounts.length} accounts` + (MULTI ? ` in ${DATA.orgs.length} org${DATA.orgs.length === 1 ? "" : "s"}` : "") +
     ` · generated ${DATA.generatedAt}` + (DATA.failedOrgs.length ? ` · not read: ${DATA.failedOrgs.join(", ")}` : "");
 }
+// filters are remembered across renders (shared localStorage), so say which ones hide everything
+function emptyState() {
+  const on = [state.domain && `business domain "${state.domain}"`, state.envs.size && `environment ${[...state.envs].join(", ")}`,
+    state.q && `search "${state.q}"`].filter(Boolean);
+  return el("div", {class: "empty"}, "No accounts match" + (on.length ? ` (filtered by ${on.join(", ")}).` : "."),
+    on.length ? [" ", el("button", {class: "linkish", onclick: clearFilters}, "Clear filters")] : null);
+}
+function clearFilters() {
+  state.domain = ""; state.envs.clear(); state.q = ""; q.value = "";
+  LS.set("domain", ""); LS.set("envs", []); refresh();
+}
+const refresh = () => { renderEnvs(); renderDomains(); render(); };
 function renderEnvs() {
-  const counts = {};
-  for (const a of DATA.accounts) if (orgOn(a)) counts[a.env || "—"] = (counts[a.env || "—"] || 0) + 1;
+  const counts = {}, present = new Set();
+  for (const a of DATA.accounts) if (orgOn(a)) {
+    present.add(a.env || "—");
+    if (visible(a, "env")) counts[a.env || "—"] = (counts[a.env || "—"] || 0) + 1;
+  }
   const box = document.getElementById("envs");
-  box.replaceChildren(...[...ENV_ORDER, "—"].filter(e => counts[e] || ENV_ORDER.includes(e) || state.envs.has(e)).map(e =>
+  box.replaceChildren(...[...ENV_ORDER, "—"].filter(e => present.has(e) || ENV_ORDER.includes(e) || state.envs.has(e)).map(e =>
     el("button", {class: "chip", style: `--c:${envColor(e)}`, "aria-pressed": String(state.envs.has(e)),
       title: e === "—" ? "No environment set" : `Show only ${e} (multi-select)`,
-      onclick: () => { state.envs.has(e) ? state.envs.delete(e) : state.envs.add(e); LS.set("envs", [...state.envs]); renderEnvs(); render(); }},
+      onclick: () => { state.envs.has(e) ? state.envs.delete(e) : state.envs.add(e); LS.set("envs", [...state.envs]); refresh(); }},
       el("span", {class: "dot"}), e, el("b", {}, counts[e] || 0))));
+}
+// one business domain at a time; options are the domains of orgs switched on, merged by name
+function renderDomains() {
+  const counts = new Map();  // domain names are table data: no plain-object keys
+  for (const a of DATA.accounts) if (orgOn(a)) counts.set(a.domain, (counts.get(a.domain) || 0) + (visible(a, "domain") ? 1 : 0));
+  // keep a remembered choice listed (count 0) so the filter is never applied invisibly
+  if (state.domain && !counts.has(state.domain)) counts.set(state.domain, 0);
+  const names = [...counts.keys()]
+    .sort((x, y) => (x === DATA.legacyDomain) - (y === DATA.legacyDomain) || x.localeCompare(y));
+  const sel = document.getElementById("domain");
+  sel.replaceChildren(el("option", {value: ""}, "All business domains"),
+    ...names.map(d => el("option", {value: d, selected: d === state.domain}, `${d} (${counts.get(d)})`)));
+  sel.value = state.domain;
+  sel.hidden = names.length < 2 && !state.domain;  // e.g. no OU values: everything is Legacy
+  sel.classList.toggle("on", !!state.domain);
 }
 // combined page: switch orgs on/off in Settings; remembered per browser (e.g. one browser profile per org)
 function renderOrgs() {
@@ -934,7 +970,7 @@ function renderOrgs() {
     el("input", {type: "checkbox", checked: !state.hiddenOrgs.has(o.label),
       onchange: e => {
         e.target.checked ? state.hiddenOrgs.delete(o.label) : state.hiddenOrgs.add(o.label);
-        LS.set("hiddenOrgs", [...state.hiddenOrgs]); renderEnvs(); render();
+        LS.set("hiddenOrgs", [...state.hiddenOrgs]); refresh();
       }}),
     el("span", {}, o.label), o.orgId ? el("small", {}, o.orgId) : null,
     el("b", {title: "Accounts"}, DATA.accounts.filter(a => a.org === i).length))));
@@ -1026,11 +1062,14 @@ document.getElementById("theme").addEventListener("click", () => {
   state.theme = state.theme === "dark" ? "light" : "dark"; LS.set("theme", state.theme); applyTheme();
 });
 const q = document.getElementById("q");
-q.addEventListener("input", () => { state.q = q.value.trim().toLowerCase(); render(); });
+q.addEventListener("input", () => { state.q = q.value.trim().toLowerCase(); refresh(); });
+document.getElementById("domain").addEventListener("change", e => {
+  state.domain = e.target.value; LS.set("domain", state.domain); refresh();
+});
 document.addEventListener("keydown", e => {
   if (document.querySelector("dialog[open]")) return;
-  if (e.key === "/" && document.activeElement !== q && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); q.focus(); }
-  if (e.key === "Escape" && document.activeElement === q) { q.value = ""; state.q = ""; render(); q.blur(); }
+  if (e.key === "/" && document.activeElement !== q && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); q.focus(); }
+  if (e.key === "Escape" && document.activeElement === q) { q.value = ""; state.q = ""; refresh(); q.blur(); }
 });
 document.getElementById("addrole").addEventListener("submit", e => {
   e.preventDefault();
@@ -1053,7 +1092,7 @@ for (const dlg of document.querySelectorAll("dialog")) {
   dlg.querySelector(".dlg-close").addEventListener("click", () => dlg.close());
   dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });  // backdrop
 }
-applyTheme(); applyView(); renderOrgs(); renderEnvs(); renderRoles(); render();
+applyTheme(); applyView(); renderOrgs(); renderEnvs(); renderDomains(); renderRoles(); render();
 </script>
 </body>
 </html>
