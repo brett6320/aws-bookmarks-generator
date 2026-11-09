@@ -611,6 +611,7 @@ html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--text);font:13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
 button,input,select{font:inherit;color:inherit}
+[hidden]{display:none!important}
 :focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex:none}
 .brand{display:flex;flex-direction:column;margin-right:auto;min-width:0}
@@ -652,7 +653,15 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 .roles li{display:flex;align-items:center;gap:6px;padding:6px 8px;cursor:grab;border-radius:5px;background:var(--card);border:1px solid var(--line)}
 .roles li span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .roles li button{border:0;background:transparent;cursor:pointer;color:var(--muted);padding:0 2px;font-size:14px;line-height:1}
-.roles li button:hover{color:var(--prd)}
+.roles li button:hover{color:var(--text)}
+.roles li button.rm:hover{color:var(--prd)}
+.roles li button:disabled{visibility:hidden}
+.roles li input{width:130px;flex:none;padding:3px 6px;border-radius:4px;border:1px solid var(--line);background:var(--bg);font-size:12px}
+.rolebar{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.rolebar .btn{padding:3px 9px;font-size:12px}
+.rolebar .btn.warn{border-color:var(--prd);color:var(--prd)}
+#rolesStatus:empty{display:none}
+#rolesStatus.err{color:var(--prd)}
 .roles li.drag{opacity:.4}
 .addrole{display:flex;gap:6px}
 .roleorg{padding:5px 8px;border-radius:5px;border:1px solid var(--line);background:var(--bg);color:var(--text)}
@@ -722,8 +731,15 @@ summary .mix i{font-style:normal;font-size:10px;padding:0 5px;border-radius:3px;
       <div class="sect-head"><h3>Roles</h3><select class="roleorg" id="roleOrg" aria-label="Organization" hidden></select></div>
       <ul class="roles" id="roles"></ul>
       <form class="addrole" id="addrole"><input id="newrole" placeholder="Role name or role ARN" aria-label="Role name"><button class="btn">Add</button></form>
-      <p class="hint">Saved in this browser, per org. Each account shows a switch-role link per role, in this order (drag to reorder). Roles added to the config later appear automatically; roles you remove stay removed.</p>
+      <p class="hint">Saved in this browser, per org. Each account shows a switch-role link per role, in this order (drag, or use ↑ ↓). A display name replaces the role name on links, in the console's role menu, and in exported bookmarks. Roles added to the config later appear automatically; roles you remove stay removed.</p>
       <p class="hint" id="orgRoles"></p>
+      <div class="rolebar">
+        <button class="btn" id="rolesExport" type="button" title="Download every org's roles, order and display names as JSON">Export roles</button>
+        <button class="btn" id="rolesImport" type="button" title="Load roles from a JSON file exported here">Import roles…</button>
+        <input type="file" id="rolesFile" accept=".json,application/json" hidden>
+        <button class="btn" id="rolesReset" type="button">Reset to config</button>
+      </div>
+      <p class="hint" id="rolesStatus" role="status" aria-live="polite"></p>
     </section>
     <section class="sect">
       <h3>Export</h3>
@@ -755,6 +771,12 @@ const LS = {
 // later are appended once; roles the user removed stay removed (tracked in awsbm.seenDefaults:<org>).
 const configRoles = o => o.omitGlobalRoles ? o.roles
   : [...DATA.defaultRoles, ...o.roles.filter(r => !DATA.defaultRoles.includes(r))];
+const ROLE_ARN_PREFIX = /^arn:[^:]+:iam::\d{12}:role\//;
+// role name from a name or ARN (a path, e.g. aws-reserved/sso.amazonaws.com/, is kept); null if invalid
+function cleanRole(raw) {
+  const r = String(raw).trim().replace(ROLE_ARN_PREFIX, "");
+  return /^[\w+=,.@-]+(\/[\w+=,.@-]+)*$/.test(r) && r.length <= 576 ? r : null;
+}
 const roleKey = i => ":" + (MULTI ? DATA.orgs[i].label : "");
 function initRoles(o, i) {
   const defs = configRoles(o), k = roleKey(i);
@@ -772,10 +794,14 @@ function initRoles(o, i) {
   LS.set("seenDefaults" + k, [...new Set([...seen, ...defs])]);
   return roles;
 }
+// display names per org, role -> name; stored as [role, name] pairs (role names are user data)
+const initNames = (o, i) => new Map([LS.get("roleNames" + roleKey(i), [])].flat()
+  .filter(p => Array.isArray(p) && typeof p[0] === "string" && typeof p[1] === "string"));
 const state = {
   view: LS.get("view", "domain"),
   theme: LS.get("theme", "dark"),
   roles: DATA.orgs.map(initRoles),  // per org, indexed like DATA.orgs
+  names: DATA.orgs.map(initNames),  // per org, role -> display name
   roleOrg: 0,                       // org whose list the Roles dialog edits
   envs: new Set(LS.get("envs", [])),
   domain: String(LS.get("domain", "") || ""),  // business domain filter; "" = all
@@ -807,8 +833,9 @@ function toast(msg) {
 
 /* ---------- switch-role links ---------- */
 const rolesFor = a => state.roles[a.org];
+const roleLabel = (org, role) => state.names[org].get(role) || role;
 function displayName(a, role) {
-  return `${a.shortName} / ${role}`.slice(0, 64);
+  return `${a.shortName} / ${roleLabel(a.org, role)}`.slice(0, 64);
 }
 function switchUrl(a, role) {
   const p = new URLSearchParams({account: a.id, roleName: role, displayName: displayName(a, role)});
@@ -833,7 +860,7 @@ function visible(a, skip) {
 function card(a) {
   const roles = rolesFor(a);
   const links = roles.length
-    ? roles.map(r => el("a", {href: switchUrl(a, r), target: "_blank", rel: "noopener", title: `Switch to ${r} in ${a.id}`}, r))
+    ? roles.map(r => el("a", {href: switchUrl(a, r), target: "_blank", rel: "noopener", title: `Switch to ${r} in ${a.id}`}, roleLabel(a.org, r)))
     : [el("button", {class: "linkish", onclick: () => openSettings(a.org)}, "Add a role to get links")];
   return el("div", {class: "card", style: `--c:${envColor(a.env)}`},
     el("div", {class: "ctop"},
@@ -977,16 +1004,31 @@ function renderOrgs() {
 }
 function renderRoles() {
   const ul = document.getElementById("roles");
-  const list = state.roles[state.roleOrg];
+  const list = state.roles[state.roleOrg], names = state.names[state.roleOrg];
   let dragFrom = null;
+  const move = (from, to, dir) => {
+    const [m] = list.splice(from, 1); list.splice(to, 0, m); saveRoles();
+    if (!dir) return;  // keyboard/click move: keep focus on the moved row's arrow
+    const li = document.getElementById("roles").children[to];
+    const b = li && (li.querySelector(`[data-dir="${dir}"]:not(:disabled)`) || li.querySelector("[data-dir]:not(:disabled)"));
+    if (b) b.focus();
+  };
   ul.replaceChildren(...list.map((r, i) => el("li", {draggable: "true",
       ondragstart: e => { dragFrom = i; e.dataTransfer.setData("text/plain", r); e.dataTransfer.effectAllowed = "move"; e.currentTarget.classList.add("drag"); },
       ondragend: e => e.currentTarget.classList.remove("drag"),
       ondragover: e => e.preventDefault(),
-      ondrop: e => { e.preventDefault(); if (dragFrom === null || dragFrom === i) return;
-        const [m] = list.splice(dragFrom, 1); list.splice(i, 0, m); saveRoles(); }},
+      ondrop: e => { e.preventDefault(); if (dragFrom === null || dragFrom === i) return; move(dragFrom, i); }},
     el("span", {title: r}, r),
-    el("button", {title: `Remove ${r}`, "aria-label": `Remove ${r}`, onclick: () => { list.splice(i, 1); saveRoles(); }}, "×"))));
+    // text selection and caret moves inside the input must not start a row drag
+    el("input", {value: names.get(r) || "", placeholder: "Display name", maxlength: "64", "aria-label": `Display name for ${r}`,
+      ondragstart: e => { e.preventDefault(); e.stopPropagation(); },
+      onmousedown: e => e.currentTarget.closest("li").setAttribute("draggable", "false"),
+      onblur: e => e.currentTarget.closest("li").setAttribute("draggable", "true"),
+      onchange: e => { const v = e.target.value.trim(); v && v !== r ? names.set(r, v) : names.delete(r); saveNames(); render(); }}),
+    el("button", {title: "Move up", "aria-label": `Move ${r} up`, "data-dir": "up", disabled: i === 0, onclick: () => move(i, i - 1, "up")}, "↑"),
+    el("button", {title: "Move down", "aria-label": `Move ${r} down`, "data-dir": "down", disabled: i === list.length - 1, onclick: () => move(i, i + 1, "down")}, "↓"),
+    el("button", {class: "rm", title: `Remove ${r}`, "aria-label": `Remove ${r}`,
+      onclick: () => { list.splice(i, 1); names.delete(r); saveNames(); saveRoles(); }}, "×"))));
   const defs = configRoles(DATA.orgs[state.roleOrg]);
   document.getElementById("orgRoles").textContent = `From config: ${defs.join(", ") || "none"}`;
   const sel = document.getElementById("roleOrg");
@@ -1001,12 +1043,97 @@ function openSettings(org) {
     const i = DATA.orgs.findIndex(o => !state.hiddenOrgs.has(o.label));
     if (i >= 0) state.roleOrg = i;
   }
-  renderOrgs(); renderRoles();
+  disarmReset(); rolesStatus(""); renderOrgs(); renderRoles();
   const dlg = document.getElementById("settingsDlg");
   if (!dlg.open) dlg.showModal();
   if (typeof org === "number") document.getElementById("newrole").focus();
 }
 function saveRoles() { LS.set("roles" + roleKey(state.roleOrg), state.roles[state.roleOrg]); renderRoles(); render(); }
+// result of an import, reset or add, shown inside the dialog (a toast would sit under the modal)
+function rolesStatus(msg, err) {
+  const p = document.getElementById("rolesStatus");
+  p.textContent = msg; p.classList.toggle("err", !!err);
+}
+function saveNames(i = state.roleOrg) { LS.set("roleNames" + roleKey(i), [...state.names[i]]); }
+
+/* ---------- role lists: reset, JSON export / import ---------- */
+// back to the org's config roles, in config order, without display names (two clicks)
+function disarmReset() {
+  clearTimeout(resetRoles.h);
+  const btn = document.getElementById("rolesReset");
+  btn.classList.remove("warn"); btn.textContent = "Reset to config";
+}
+function resetRoles(btn) {
+  if (!btn.classList.contains("warn")) {
+    btn.classList.add("warn"); btn.textContent = "Click again to reset";
+    clearTimeout(resetRoles.h); resetRoles.h = setTimeout(disarmReset, 4000);
+    return;
+  }
+  disarmReset();
+  const i = state.roleOrg, defs = configRoles(DATA.orgs[i]);
+  state.roles[i] = [...defs]; state.names[i] = new Map();
+  LS.set("seenDefaults" + roleKey(i), defs); saveNames(i); saveRoles();
+  rolesStatus(MULTI ? `Roles for ${DATA.orgs[i].label} reset to config` : "Roles reset to config");
+}
+const ROLES_FORMAT = "aws-bookmarks-roles";
+function exportRoles() {
+  const doc = {format: ROLES_FORMAT, version: 1, exportedAt: new Date().toISOString(),
+    orgs: DATA.orgs.map((o, i) => ({label: o.label, orgId: o.orgId || null,
+      roles: state.roles[i].map(r => state.names[i].has(r) ? {name: r, displayName: state.names[i].get(r)} : {name: r})}))};
+  const url = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2) + "\n"], {type: "application/json"}));
+  el("a", {href: url, download: "aws-bookmarks-roles.json"}).click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// accepts this page's export, or a bare list of role names / {name, displayName} for the selected org
+function parseRoleList(items) {
+  if (!Array.isArray(items)) throw new Error("roles must be a list");
+  const roles = [], names = new Map();
+  for (const it of items) {
+    const raw = typeof it === "string" ? it : it && typeof it.name === "string" ? it.name : null;
+    if (raw === null) throw new Error("each role needs a name");
+    const r = cleanRole(raw);
+    if (!r) throw new Error(`not a valid role name: ${raw.slice(0, 80)}`);
+    if (roles.includes(r)) continue;
+    roles.push(r);
+    const dn = it && typeof it.displayName === "string" ? it.displayName.trim().slice(0, 64) : "";
+    if (dn && dn !== r) names.set(r, dn);
+  }
+  return {roles, names};
+}
+function importRoles(text) {
+  let doc;
+  try { doc = JSON.parse(text); } catch (e) { throw new Error("not a JSON file"); }
+  let entries;  // [[org index, {roles, names}]]
+  if (Array.isArray(doc)) entries = [[state.roleOrg, parseRoleList(doc)]];
+  else if (doc && doc.format === ROLES_FORMAT && Array.isArray(doc.orgs)) {
+    if (doc.version !== 1) throw new Error(`unsupported roles file version ${doc.version}`);
+    const file = doc.orgs.filter(e => e && typeof e === "object");
+    // every org ID match first, then labels for what's left (an org ID can be missing on either side);
+    // a file with one org applies to the selected org if nothing matches
+    const hits = new Map(), used = new Set();
+    DATA.orgs.forEach((o, i) => {
+      const e = o.orgId && file.find(e => !used.has(e) && e.orgId === o.orgId);
+      if (e) { hits.set(i, e); used.add(e); }
+    });
+    DATA.orgs.forEach((o, i) => {
+      if (hits.has(i)) return;
+      const e = file.find(e => !used.has(e) && e.label === o.label && !(o.orgId && e.orgId));
+      if (e) { hits.set(i, e); used.add(e); }
+    });
+    if (!hits.size && file.length === 1) hits.set(state.roleOrg, file[0]);
+    if (!hits.size) throw new Error("no org in the file matches this page");
+    entries = [...hits].sort((x, y) => x[0] - y[0]).map(([i, e]) => [i, parseRoleList(e.roles)]);
+  } else throw new Error("not a roles file exported from this page");
+  for (const [i, {roles, names}] of entries) {
+    state.roles[i] = roles; state.names[i] = names;
+    LS.set("roles" + roleKey(i), roles);
+    // the imported list is authoritative: config roles it leaves out stay out
+    LS.set("seenDefaults" + roleKey(i), [...new Set([...LS.get("seenDefaults" + roleKey(i), []), ...configRoles(DATA.orgs[i])])]);
+    saveNames(i);
+  }
+  renderRoles(); render();
+  return entries.map(([i]) => DATA.orgs[i].label);
+}
 function applyView() {
   for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === state.view));
 }
@@ -1026,7 +1153,7 @@ function exportBookmarks() {
   const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const ts = Math.floor(Date.now() / 1000);
   const links = (accts, pad) => accts.flatMap(a => rolesFor(a).map(r =>
-    `${pad}<DT><A HREF="${esc(switchUrl(a, r))}" ADD_DATE="${ts}">${esc(`${a.shortName} (${a.env || "—"}) · ${r}`)}</A>`));
+    `${pad}<DT><A HREF="${esc(switchUrl(a, r))}" ADD_DATE="${ts}">${esc(`${a.shortName} (${a.env || "—"}) · ${roleLabel(a.org, r)}`)}</A>`));
   const folder = (name, inner, pad) => [`${pad}<DT><H3 ADD_DATE="${ts}">${esc(name)}</H3>`, `${pad}<DL><p>`, ...inner, `${pad}</DL><p>`];
   let body = [];
   const domainFolders = (accts, pad) => domainGroups(accts).flatMap(([d, list]) => folder(d, links(list, pad + "    "), pad));
@@ -1074,11 +1201,12 @@ document.addEventListener("keydown", e => {
 document.getElementById("addrole").addEventListener("submit", e => {
   e.preventDefault();
   const inp = document.getElementById("newrole");
-  const name = inp.value.trim().replace(/^arn:[^:]+:iam::\d{12}:role\//, "");
-  if (!name) return;
+  if (!inp.value.trim()) return;
+  const name = cleanRole(inp.value);
+  if (!name) { rolesStatus("Not a valid role name or role ARN", true); return; }
   const list = state.roles[state.roleOrg];
-  if (list.includes(name)) { toast(`${name} already added`); return; }
-  list.push(name); inp.value = ""; saveRoles();
+  if (list.includes(name)) { rolesStatus(`${name} is already in the list`, true); return; }
+  list.push(name); inp.value = ""; rolesStatus(""); saveRoles();
 });
 document.getElementById("collapse").addEventListener("click", () => {
   const groups = [...document.querySelectorAll("details.group")];
@@ -1087,7 +1215,22 @@ document.getElementById("collapse").addEventListener("click", () => {
 });
 document.getElementById("export").addEventListener("click", exportBookmarks);
 document.getElementById("settingsBtn").addEventListener("click", () => openSettings());
-document.getElementById("roleOrg").addEventListener("change", e => { state.roleOrg = Number(e.target.value); renderRoles(); });
+document.getElementById("roleOrg").addEventListener("change", e => {
+  state.roleOrg = Number(e.target.value); disarmReset(); rolesStatus(""); renderRoles();
+});
+document.getElementById("rolesExport").addEventListener("click", exportRoles);
+document.getElementById("rolesReset").addEventListener("click", e => resetRoles(e.currentTarget));
+const rolesFile = document.getElementById("rolesFile");
+document.getElementById("rolesImport").addEventListener("click", () => rolesFile.click());
+rolesFile.addEventListener("change", async () => {
+  const f = rolesFile.files[0]; rolesFile.value = "";
+  if (!f) return;
+  try {
+    if (f.size > 1e6) throw new Error("file is too large");
+    const orgs = importRoles(await f.text());
+    rolesStatus(MULTI ? `Imported roles for ${orgs.join(", ")}` : "Roles imported");
+  } catch (err) { rolesStatus(`Import failed: ${err.message}. Nothing was changed.`, true); }
+});
 for (const dlg of document.querySelectorAll("dialog")) {
   dlg.querySelector(".dlg-close").addEventListener("click", () => dlg.close());
   dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });  // backdrop
