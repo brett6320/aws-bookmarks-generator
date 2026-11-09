@@ -88,6 +88,7 @@ SIGNIN_URLS = {
 }
 
 ROLE_ARN_PREFIX_RE = re.compile(r"^arn:[^:]+:iam::\d{12}:role/")  # same rule as the page's Add form
+ROLE_NAME_RE = re.compile(r"^[\w+=,.@-]+(/[\w+=,.@-]+)*$")  # IAM role name, optional path; as the page's cleanRole
 TABLE_ARN_RE = re.compile(
     r"^arn:(?P<partition>[^:]+):dynamodb:(?P<region>[^:]+):(?P<account>\d{12}):table/(?P<table>[^/]+)$"
 )
@@ -104,6 +105,7 @@ SETTINGS = {
     "attr_ou": ("BG_ATTR_OU", "ou"),
     "attr_environment": ("BG_ATTR_ENVIRONMENT", "environment"),
     "roles": ("BG_DEFAULT_ROLES", "ReadOnly,Administrator"),
+    "role_names": ("BG_ROLE_NAMES", None),
     "title": ("BG_TITLE", "AWS Accounts"),
     "output_dir": ("BG_OUTPUT_DIR", "output"),
     "include_inactive": ("BG_INCLUDE_INACTIVE", "false"),
@@ -114,7 +116,7 @@ SETTINGS = {
     "account_domains": ("BG_ACCOUNT_DOMAINS", None),
 }
 # Settings that apply to the whole page; all others are per org (per env file).
-PAGE_SETTINGS = {"roles", "title", "output_dir"}
+PAGE_SETTINGS = {"roles", "role_names", "title", "output_dir"}
 
 
 # --------------------------------------------------------------------------- #
@@ -152,6 +154,29 @@ def _role_list(value: Union[str, Sequence[str]]) -> List[str]:
     return list(dict.fromkeys(n for n in names if n))
 
 
+def _role_names(value: Union[str, Dict[str, str]]) -> Dict[str, str]:
+    """'Role=Display name,...' or a dict -> {role: display name}. Role ARNs are reduced to the name
+    (a path is kept, so it must match the role list the same way).
+
+    Splits on the last '=', since IAM role names may contain '=' but display names rarely do."""
+    pairs = value.items() if isinstance(value, dict) else (
+        (item.rpartition("=")[0], item.rpartition("=")[2]) if "=" in item else (item, "")
+        for item in (i.strip() for i in value.split(",")) if item)
+    out: Dict[str, str] = {}
+    for role, name in pairs:
+        role, name = ROLE_ARN_PREFIX_RE.sub("", str(role).strip()), str(name).strip()
+        if not role or not name:
+            raise ValueError(f"Bad role name mapping {role or '?'}={name}: use Role=Display name, comma-separated")
+        if not ROLE_NAME_RE.match(role) or len(role) > 576:
+            raise ValueError(f"Bad role name mapping {role}={name}: {role!r} isn't a valid IAM role name")
+        if len(name) > 64:
+            raise ValueError(f"Display name for {role} is over 64 characters")
+        if role in out and out[role] != name:
+            log.warning("Role %s is named twice in one setting (%r, %r); using %r", role, out[role], name, out[role])
+        out.setdefault(role, name)
+    return out
+
+
 def resolve_settings(kwargs: Dict[str, Any], env: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
     """kwargs > `env` (an explicitly named env file) > environment (incl. ./.env) > defaults.
 
@@ -177,6 +202,7 @@ def resolve_settings(kwargs: Dict[str, Any], env: Optional[Mapping[str, str]] = 
         cfg[key] = value
     for key in ("roles", "org_roles"):
         cfg[key] = _role_list(cfg[key] or [])
+    cfg["role_names"] = _role_names(cfg["role_names"] or {})
     cfg["account_environments"] = _account_map(cfg["account_environments"] or {}, "BG_ACCOUNT_ENVIRONMENTS", normalize_env)
     cfg["account_domains"] = _account_map(cfg["account_domains"] or {}, "BG_ACCOUNT_DOMAINS",
                                           lambda v: LEGACY_DOMAIN if v.lower() == LEGACY_DOMAIN.lower() else v or None)
@@ -517,7 +543,12 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
         per_org = sorted({k for k, v in kwargs.items() if v is not None} - PAGE_SETTINGS)
         if per_org:
             raise ValueError(f"With several env files, set {', '.join(per_org)} in each file, not as a flag/kwarg")
-    cfgs = [resolve_settings(kwargs, env) for env in envs]
+    cfgs = []
+    for path, env in zip(paths or [None], envs):
+        try:
+            cfgs.append(resolve_settings(kwargs, env))
+        except ValueError as e:
+            raise ValueError(f"{path}: {e}") if path else e
     if multi:
         for cfg, path in zip(cfgs, paths):
             cfg["org_label"] = cfg["org_label"] or env_file_label(path)
@@ -583,6 +614,16 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
             log.debug("Org %s omits the global roles; its BG_DEFAULT_ROLES aren't added to them", cfg["org_label"])
             continue
         roles += [r for r in cfg["roles"] if r not in roles]
+    # display names from every file; the first file to name a role wins. Files that set
+    # BG_ROLE_NAMES come before ones that only inherit it from the shell (a file beats the shell).
+    role_names: Dict[str, str] = {}
+    own = [bool(env) and SETTINGS["role_names"][0] in env for env in envs]
+    for cfg, _ in sorted(zip(cfgs, own), key=lambda c: not c[1]):
+        for role, name in cfg["role_names"].items():
+            if role in role_names and role_names[role] != name:
+                log.warning("Role %s is named %r and %r by different env files (or the shell); using %r",
+                            role, role_names[role], name, role_names[role])
+            role_names.setdefault(role, name)
     now = datetime.now(timezone.utc)
     data = {
         "title": page["title"],
@@ -590,6 +631,8 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
         "environments": list(ENVIRONMENTS),
         "legacyDomain": LEGACY_DOMAIN,
         "defaultRoles": roles,
+        # [role, display name] pairs: role names are config data, so no object keys in the page
+        "roleNames": sorted(role_names.items()),
         "multi": multi,
         "orgs": orgs,
         "failedOrgs": failed,
@@ -605,7 +648,7 @@ def generate(env_files: Optional[Sequence[Union[str, Path]]] = None, **kwargs: A
     """Build the bookmarks page. Accepts any key in SETTINGS as a kwarg.
 
     env_files: one env file per org. None/one file -> single-org page; two or more -> one
-    combined page. With several files only page settings (roles, title, output_dir) may be
+    combined page. With several files only page settings (roles, role_names, title, output_dir) may be
     passed as kwargs; an org that fails is logged and left out.
     """
     return _generate(env_files, kwargs)[0]
@@ -625,6 +668,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--attr-ou", help="DDB attribute: OU / business domain (default ou)")
     p.add_argument("--attr-environment", help="DDB attribute: environment (default environment)")
     p.add_argument("--roles", help="Comma-separated roles seeded into the page on first load")
+    p.add_argument("--role-names", help="Display names for roles: Role=Name,... (default BG_ROLE_NAMES)")
     p.add_argument("--org-roles", help="Comma-separated roles added for this org only (default BG_ORG_ROLES)")
     p.add_argument("--account-environments", help="Environment per account, overriding the table: ID=Env,... "
                                                   "(default BG_ACCOUNT_ENVIRONMENTS)")
@@ -805,7 +849,7 @@ summary .mix i{font-style:normal;font-size:10px;padding:0 5px;border-radius:3px;
       <div class="sect-head"><h3>Roles</h3><select class="roleorg" id="roleOrg" aria-label="Organization" hidden></select></div>
       <ul class="roles" id="roles"></ul>
       <form class="addrole" id="addrole"><input id="newrole" placeholder="Role name or role ARN" aria-label="Role name"><button class="btn">Add</button></form>
-      <p class="hint">Saved in this browser, per org. Each account shows a switch-role link per role, in this order (drag, or use ↑ ↓). A display name replaces the role name on links, in the console's role menu, and in exported bookmarks. Roles added to the config later appear automatically; roles you remove stay removed.</p>
+      <p class="hint">Saved in this browser, per org. Each account shows a switch-role link per role, in this order (drag, or use ↑ ↓). A display name replaces the role name on links, in the console's role menu, and in exported bookmarks; leave it empty to use the config's name (shown greyed). Roles added to the config later appear automatically; roles you remove stay removed.</p>
       <p class="hint" id="orgRoles"></p>
       <div class="rolebar">
         <button class="btn" id="rolesExport" type="button" title="Download every org's roles, order and display names as JSON">Export roles</button>
@@ -907,7 +951,15 @@ function toast(msg) {
 
 /* ---------- switch-role links ---------- */
 const rolesFor = a => state.roles[a.org];
-const roleLabel = (org, role) => state.names[org].get(role) || role;
+// display name: this browser's, else the config's (BG_ROLE_NAMES), else the role name
+const CONFIG_NAMES = new Map(DATA.roleNames);
+// store a browser name only when it differs from what would show anyway, so later config renames
+// still apply; typing the role itself keeps the plain role name over a config name
+function setName(names, role, v) {
+  const cfg = CONFIG_NAMES.get(role);
+  if (!v || v === cfg || (v === role && !cfg)) names.delete(role); else names.set(role, v);
+}
+const roleLabel = (org, role) => state.names[org].get(role) || CONFIG_NAMES.get(role) || role;
 function displayName(a, role) {
   return `${a.shortName} / ${roleLabel(a.org, role)}`.slice(0, 64);
 }
@@ -1096,11 +1148,12 @@ function renderRoles() {
       ondrop: e => { e.preventDefault(); if (dragFrom === null || dragFrom === i) return; move(dragFrom, i); }},
     el("span", {title: r}, r),
     // text selection and caret moves inside the input must not start a row drag
-    el("input", {value: names.get(r) || "", placeholder: "Display name", maxlength: "64", "aria-label": `Display name for ${r}`,
+    el("input", {value: names.get(r) || "", placeholder: CONFIG_NAMES.get(r) || "Display name", maxlength: "64",
+      "aria-label": `Display name for ${r}`, title: CONFIG_NAMES.has(r) ? `Config name: ${CONFIG_NAMES.get(r)}` : null,
       ondragstart: e => { e.preventDefault(); e.stopPropagation(); },
       onmousedown: e => e.currentTarget.closest("li").setAttribute("draggable", "false"),
       onblur: e => e.currentTarget.closest("li").setAttribute("draggable", "true"),
-      onchange: e => { const v = e.target.value.trim(); v && v !== r ? names.set(r, v) : names.delete(r); saveNames(); render(); }}),
+      onchange: e => { setName(names, r, e.target.value.trim()); saveNames(); render(); }}),
     el("button", {title: "Move up", "aria-label": `Move ${r} up`, "data-dir": "up", disabled: i === 0, onclick: () => move(i, i - 1, "up")}, "↑"),
     el("button", {title: "Move down", "aria-label": `Move ${r} down`, "data-dir": "down", disabled: i === list.length - 1, onclick: () => move(i, i + 1, "down")}, "↓"),
     el("button", {class: "rm", title: `Remove ${r}`, "aria-label": `Remove ${r}`,
@@ -1172,7 +1225,7 @@ function parseRoleList(items) {
     if (roles.includes(r)) continue;
     roles.push(r);
     const dn = it && typeof it.displayName === "string" ? it.displayName.trim().slice(0, 64) : "";
-    if (dn && dn !== r) names.set(r, dn);
+    setName(names, r, dn);
   }
   return {roles, names};
 }

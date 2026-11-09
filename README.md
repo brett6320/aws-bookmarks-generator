@@ -25,8 +25,12 @@ Each run writes a new render to `output/aws-bookmarks-<UTC timestamp>.html` (for
 - **Settings dialog** (header button) holds org on/off (combined page), roles, and bookmark export.
 - **Roles per org, stored in localStorage.** In Settings, add, remove, and reorder (drag, or the ↑ ↓ buttons); on a combined page, pick the org first. Every account shows one switch-role link per role of its org, in that order.
   - **Display names.** Give a role a short name (for example `Admin` for `AWSReservedSSO_AdministratorAccess_1a2b3c4d`). It's used for the link text, the console's role-history name, and exported bookmarks; the link still switches to the real role.
+    - Set defaults in config with `BG_ROLE_NAMES=AWSReservedSSO_AdministratorAccess_1a2b3c4d=Admin,ReadOnlyAccess=Read only`. They apply to any role with that name, in every org.
+    - The role must be written as it appears in the role list, including any path (`aws-reserved/sso.amazonaws.com/Name`). Display names can't contain `,`; everything before the last `=` is the role.
+    - A name typed in Settings overrides the config's for that browser. Leave the box empty to use the config's name, which is shown greyed in the box, or type the role name itself to show it plain.
+    - Exported role files hold only the names typed in Settings.
   - **Export / import roles.** *Export roles* downloads `aws-bookmarks-roles.json` with every org's roles, order and display names. *Import roles…* loads such a file, matching orgs by organization ID, then by label. Org IDs are matched first, so a label shared by two orgs can't pull in the wrong list. A file with one org that matches none, or a plain JSON list of role names (or `{"name", "displayName"}` objects), goes to the org selected in Settings. The imported list replaces the current one, and config roles it leaves out stay out. Import is all-or-nothing: one invalid role name rejects the file and nothing changes. Role names with a path (from an ARN such as `…:role/aws-reserved/sso.amazonaws.com/Name`) are kept as `path/Name`, both here and in the Add form.
-  - **Reset to config** (click twice) puts the selected org back to its config roles, in config order, and clears its display names.
+  - **Reset to config** (click twice) puts the selected org back to its config roles, in config order, and clears the display names typed in Settings, so the config's names apply again.
   - Each org's list starts from its config roles: `BG_DEFAULT_ROLES` plus `BG_ORG_ROLES`, or only `BG_ORG_ROLES` when `BG_ORG_OMIT_GLOBAL_ROLES=true`.
   - Config roles added later are appended once, and roles you removed stay removed.
   - A browser list saved before per-org roles carries over to orgs that don't omit the global roles.
@@ -79,12 +83,13 @@ Details:
   - Each org's starting list is the global roles plus its `BG_ORG_ROLES`. An org that sets `BG_ORG_OMIT_GLOBAL_ROLES=true` starts from `BG_ORG_ROLES` only, and its own `BG_DEFAULT_ROLES` is left out of the global roles.
   - After that, each org's list is edited separately in Settings.
   - `BG_ORG_ROLES` adds roles for that org only.
+  - `BG_ROLE_NAMES` from every file is merged. If two files name the same role differently, the first file wins, with a warning. A file that sets `BG_ROLE_NAMES` wins over one that only inherits it from the shell.
   - Role ARNs are reduced to the role name, and duplicates are dropped.
   - `BG_ORG_*` keys are read only from the org's own file, never from the shell.
 - **Org on/off.** Settings has a switch per org. Switching one off hides that org's accounts in every view, in the environment and business domain counts, and in the export.
   - The choice is remembered in the browser (localStorage), so each browser profile can keep its own orgs switched on.
   - Like roles, it's shared across renders opened from the same origin.
-- **Flags.** With several files, only the page flags (`--roles`, `--title`, `-o`) are allowed. Put everything else in the env files.
+- **Flags.** With several files, only the page flags (`--roles`, `--role-names`, `--title`, `-o`) are allowed. Put everything else in the env files.
 - **Precedence.** Values in a named env file override the shell environment, so an exported `AWS_PROFILE` doesn't leak into every org.
   - A key that's present but blank (`AWS_PROFILE=`) means the default, not the shell's value.
   - Keys a file leaves out entirely still fall back to the environment.
@@ -112,6 +117,7 @@ Precedence: kwargs / CLI flags > a file named with `--env-file` > environment (i
 | `attr_ou` | `BG_ATTR_OU` | `ou` | Business domain (empty/missing → Legacy) |
 | `attr_environment` | `BG_ATTR_ENVIRONMENT` | `environment` | Environment |
 | `roles` | `BG_DEFAULT_ROLES` | `ReadOnly,Administrator` | Default roles, comma-separated in display order. Seed each browser's list; roles added later are appended, roles a user removed stay removed |
+| `role_names` | `BG_ROLE_NAMES` | — | Display names for roles, `Role=Name` pairs, comma-separated (role ARNs accepted). Used on links, in the console's role history and in exported bookmarks; a name typed in Settings overrides it |
 | `title` | `BG_TITLE` | `AWS Accounts` | Page title |
 | `output_dir` | `BG_OUTPUT_DIR` | `output` | Directory for timestamped renders (created if missing) |
 | `include_inactive` | `BG_INCLUDE_INACTIVE` | `false` | Include suspended/closed accounts |
