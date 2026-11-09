@@ -15,6 +15,12 @@ Each run writes a new render to `output/aws-bookmarks-<UTC timestamp>.html` (for
 - **Business domain filter.** A header dropdown shows one business domain (the table's OU attribute) at a time, with Legacy last and an account count per domain. It applies to both views, the shown-accounts count, and the export, and the choice is remembered in the browser. Counts on the dropdown and the environment chips take the other filters and search into account. If every account is Legacy (no OU values), the dropdown is hidden.
   - Filters are shared across renders like roles, so when filters hide everything the page names them and offers **Clear filters**. On a combined page, the list merges domains by name across the orgs that are switched on.
 - **Environment badges and filters** for Lab, Sbx, Dev, Tst, Prd, and Bil (billing). Common spellings are normalized (`sandbox` → Sbx, `test` → Tst, `production` → Prd, `billing` → Bil). The console header color is set per environment (Bil uses the default header).
+- **Per-account overrides** in the env file win over the table and the Legacy sandbox rule: `BG_ACCOUNT_ENVIRONMENTS=111122223333=Prd,444455556666=Sbx` and `BG_ACCOUNT_DOMAINS=111122223333=Payments`.
+  - Environments accept the same spellings as the table (`sandbox`, `production`, …). Account IDs may drop leading zeros.
+  - A bad entry stops the run. IDs that match no account on the page are ignored, with one warning. Values can't contain `,`; only the first `=` splits an entry, and anything after it (including `#`) is part of the value.
+  - A business domain of `legacy` in any case means the Legacy group.
+  - Per org, like the other org settings, but unlike `BG_ORG_*` a file that leaves them out falls back to the shell. Account IDs are unique across orgs, so one exported list covering several orgs works.
+  - Tooltips show the table's value: the environment badge, and the account name for the business domain. The table itself isn't changed.
 - **Legacy sandboxes.** Legacy accounts whose environment is Dev, or whose account name or short name contains "sandbox" (any case), are shown as Sbx. The name rule never changes a Prd or Bil account (their console colour is a safety cue); those are logged as a warning instead. The badge tooltip shows the table's original value. The table itself isn't changed.
 - **Settings dialog** (header button) holds org on/off (combined page), roles, and bookmark export.
 - **Roles per org, stored in localStorage.** In Settings, add, remove, and reorder (drag, or the ↑ ↓ buttons); on a combined page, pick the org first. Every account shows one switch-role link per role of its org, in that order.
@@ -117,6 +123,8 @@ Precedence: kwargs / CLI flags > a file named with `--env-file` > environment (i
 | `include_inactive` | `BG_INCLUDE_INACTIVE` | `false` | Include suspended/closed accounts |
 | `org_label` | `BG_ORG_LABEL` | env file name | Org name on a multi-org page |
 | `org_roles` | `BG_ORG_ROLES` | — | Comma-separated roles added for this org's accounts only, after the global roles |
+| `account_environments` | `BG_ACCOUNT_ENVIRONMENTS` | — | Environment per account, overriding the table: `ID=Env`, comma-separated |
+| `account_domains` | `BG_ACCOUNT_DOMAINS` | — | Business domain per account, overriding the table: `ID=Domain`, comma-separated |
 | `omit_global_roles` | `BG_ORG_OMIT_GLOBAL_ROLES` | `false` | Show only `BG_ORG_ROLES` for this org, leaving out the global roles |
 
 Without `ddb_profile`, the table is read with the Organizations session if it's in the table's account, otherwise through `ddb_role_name` assumed from it. The generator refuses to run if the credentials end up in a different account from the ARN.

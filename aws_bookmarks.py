@@ -112,6 +112,8 @@ SETTINGS = {
     "org_label": ("BG_ORG_LABEL", None),
     "org_roles": ("BG_ORG_ROLES", None),
     "omit_global_roles": ("BG_ORG_OMIT_GLOBAL_ROLES", "false"),
+    "account_environments": ("BG_ACCOUNT_ENVIRONMENTS", None),
+    "account_domains": ("BG_ACCOUNT_DOMAINS", None),
 }
 # Settings that apply to the whole page; all others are per org (per env file).
 PAGE_SETTINGS = {"roles", "role_names", "title", "output_dir"}
@@ -201,6 +203,9 @@ def resolve_settings(kwargs: Dict[str, Any], env: Optional[Mapping[str, str]] = 
     for key in ("roles", "org_roles"):
         cfg[key] = _role_list(cfg[key] or [])
     cfg["role_names"] = _role_names(cfg["role_names"] or {})
+    cfg["account_environments"] = _account_map(cfg["account_environments"] or {}, "BG_ACCOUNT_ENVIRONMENTS", normalize_env)
+    cfg["account_domains"] = _account_map(cfg["account_domains"] or {}, "BG_ACCOUNT_DOMAINS",
+                                          lambda v: LEGACY_DOMAIN if v.lower() == LEGACY_DOMAIN.lower() else v or None)
     for key in ("include_inactive", "omit_global_roles"):
         if isinstance(cfg[key], str):
             cfg[key] = cfg[key].lower() in ("1", "true", "yes")
@@ -231,6 +236,26 @@ def normalize_account_id(value: Any) -> str:
     if text.endswith(".0"):  # Decimal/float rendering
         text = text[:-2]
     return text.zfill(12)
+
+
+def _account_map(value: Union[str, Dict[str, str]], setting: str, convert) -> Dict[str, str]:
+    """'111122223333=Value,...' or a dict -> {12-digit account ID: convert(value)}; raises on bad entries."""
+    pairs = value.items() if isinstance(value, dict) else (
+        item.partition("=")[::2] for item in (i.strip() for i in value.split(",")) if item)
+    out: Dict[str, str] = {}
+    for acct, raw in pairs:
+        acct, raw = str(acct).strip(), str(raw).strip()
+        if not re.fullmatch(r"\d{1,12}", acct):
+            raise ValueError(f"{setting}: {acct or '?'}={raw} needs a 12-digit account ID")
+        converted = convert(raw)
+        if not converted:
+            raise ValueError(f"{setting}: {acct}={raw} isn't a valid value"
+                             + (f" (one of {', '.join(ENVIRONMENTS)})" if convert is normalize_env else ""))
+        acct = acct.zfill(12)
+        if acct in out and out[acct] != converted:
+            raise ValueError(f"{setting}: account {acct} is listed twice ({out[acct]}, {converted})")
+        out[acct] = converted
+    return out
 
 
 def normalize_env(value: Any) -> Optional[str]:
@@ -378,7 +403,12 @@ def _legacy_sandbox(domain: str, env: Optional[str], *names: str) -> bool:
     return env == "Dev" or (env not in LEGACY_SANDBOX_KEEP and any("sandbox" in n.lower() for n in names))
 
 
-def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]],
+          env_overrides: Optional[Dict[str, str]] = None,
+          domain_overrides: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    """Org accounts + table metadata. Env-file overrides (account ID -> environment / business domain)
+    beat the table and the Legacy sandbox rule."""
+    env_overrides, domain_overrides = env_overrides or {}, domain_overrides or {}
     merged = []
     remapped = 0
     for acct_id, info in org["accounts"].items():
@@ -390,9 +420,12 @@ def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]]) -> List[Dict[str
             log.warning("Account %s: unrecognised environment %r", acct_id, env_raw)
         # short codes are lowercase by convention; the account-name fallback keeps its case
         short = str(m["shortName"]).strip().lower() if not _blank(m.get("shortName")) else info["name"]
-        domain = ou or LEGACY_DOMAIN
-        mapped = env != LEGACY_SANDBOX_ENV and _legacy_sandbox(domain, env, info["name"], short)
-        if not mapped and env in LEGACY_SANDBOX_KEEP and domain.lower() == LEGACY_DOMAIN.lower() \
+        domain = domain_overrides.get(acct_id) or ou or LEGACY_DOMAIN
+        if acct_id in env_overrides:
+            env, mapped = env_overrides[acct_id], False
+        else:
+            mapped = env != LEGACY_SANDBOX_ENV and _legacy_sandbox(domain, env, info["name"], short)
+        if acct_id not in env_overrides and not mapped and env in LEGACY_SANDBOX_KEEP and domain.lower() == LEGACY_DOMAIN.lower() \
                 and any("sandbox" in n.lower() for n in (info["name"], short)):
             log.warning("Account %s (%s): Legacy, named like a sandbox but %s in the table; left as %s",
                         acct_id, info["name"], env, env)
@@ -407,6 +440,9 @@ def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]]) -> List[Dict[str
                 "env": env,
                 "envRaw": None if env_raw is None else str(env_raw),
                 "envMapped": mapped,
+                "envOverride": acct_id in env_overrides,
+                # table value when the env file set the business domain
+                "domainTable": ((ou or LEGACY_DOMAIN) if m else "no table row") if acct_id in domain_overrides else None,
                 "hasMetadata": bool(m),
             }
         )
@@ -417,7 +453,8 @@ def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]]) -> List[Dict[str
         log.info("%d %s accounts (Dev, or \"sandbox\" in the name) shown as %s", remapped, LEGACY_DOMAIN, LEGACY_SANDBOX_ENV)
     missing = sum(1 for a in merged if not a["hasMetadata"])
     if missing:
-        log.warning("%d org accounts have no DDB metadata (shown as %s)", missing, LEGACY_DOMAIN)
+        unset = sum(1 for a in merged if not a["hasMetadata"] and a["id"] not in domain_overrides)
+        log.warning("%d org accounts have no DDB metadata (%d shown as %s)", missing, unset, LEGACY_DOMAIN)
     return sorted(merged, key=lambda a: a["shortName"].lower())
 
 
@@ -474,7 +511,7 @@ def fetch_org_data(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "orgId": org["tree"].get("orgId"),
         "signinUrl": SIGNIN_URLS.get(partition, SIGNIN_URLS["aws"]),
         "tree": org["tree"],
-        "accounts": merge(org, meta),
+        "accounts": merge(org, meta, cfg["account_environments"], cfg["account_domains"]),
     }
 
 
@@ -558,6 +595,14 @@ def _generate(env_files: Optional[Sequence[Union[str, Path]]], kwargs: Dict[str,
         accounts.extend(data["accounts"])
     if not orgs:
         raise RuntimeError("No org could be read")
+    # once for the whole page: a shell value inherited by several org files covers every org's accounts
+    shown = {a["id"] for a in accounts}
+    for key in ("account_environments", "account_domains"):
+        unknown = sorted({acct for cfg in cfgs for acct in cfg[key]} - shown)
+        if unknown:
+            log.warning("%s: %s match no account on the page (ignored)%s", SETTINGS[key][0], ", ".join(unknown),
+                        f"; not read: {', '.join(failed)}" if failed else
+                        "" if cfgs[0]["include_inactive"] else "; suspended accounts are left out")
 
     # page settings: title and output dir from the first org's settings, roles merged in order
     for o in orgs:
@@ -625,6 +670,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--roles", help="Comma-separated roles seeded into the page on first load")
     p.add_argument("--role-names", help="Display names for roles: Role=Name,... (default BG_ROLE_NAMES)")
     p.add_argument("--org-roles", help="Comma-separated roles added for this org only (default BG_ORG_ROLES)")
+    p.add_argument("--account-environments", help="Environment per account, overriding the table: ID=Env,... "
+                                                  "(default BG_ACCOUNT_ENVIRONMENTS)")
+    p.add_argument("--account-domains", help="Business domain per account, overriding the table: ID=Domain,... "
+                                             "(default BG_ACCOUNT_DOMAINS)")
     p.add_argument("--omit-global-roles", action="store_const", const=True,
                    help="Show only --org-roles for this org, not the global roles")
     p.add_argument("--title", help="Page title")
@@ -942,9 +991,11 @@ function card(a) {
   return el("div", {class: "card", style: `--c:${envColor(a.env)}`},
     el("div", {class: "ctop"},
       el("strong", {title: a.shortName}, a.shortName),
-      el("span", {class: "badge", title: (a.envRaw || "No environment") + (a.envMapped ? ` (shown as ${a.env}: Legacy dev/sandbox account)` : "")}, a.env || "—")),
+      el("span", {class: "badge", title: (a.envRaw || "No environment") + (a.envOverride ? ` in the table; set to ${a.env || "—"} in the env file`
+        : a.envMapped ? ` (shown as ${a.env}: Legacy dev/sandbox account)` : "")}, a.env || "—")),
     el("div", {class: "cmeta"},
-      el("span", {class: "name", title: `${a.name}\n${a.email}\n${a.orgPath.join(" / ") || "Root"}`}, a.name),
+      el("span", {class: "name", title: `${a.name}\n${a.email}\n${a.orgPath.join(" / ") || "Root"}` +
+        (a.domainTable ? `\nBusiness domain set in the env file (table: ${a.domainTable})` : "")}, a.name),
       el("button", {class: "acct", title: "Copy account ID", onclick: () => copy(a.id)}, a.id)),
     el("div", {class: "links"}, links));
 }
