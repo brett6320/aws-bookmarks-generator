@@ -1,6 +1,6 @@
 # AWS Bookmarks Generator
 
-Builds one self-contained HTML page of AWS console switch-role links for every account in an AWS Organization. Account structure comes from **Organizations**. Short name, business domain, and environment come from a **DynamoDB** table, matched on account number. The page loads nothing from outside the file (no CDN, fonts, or assets), so you can open it straight from disk or host it anywhere.
+Builds one self-contained HTML page of AWS console switch-role links for every account in an AWS Organization. Account structure comes from **Organizations**. Short name, business domain, and environment come from a **DynamoDB** table, matched on account number. Short names missing from the table come from a `Shortname` account tag, then the account name. The page loads nothing from outside the file (no CDN, fonts, or assets), so you can open it straight from disk or host it anywhere.
 
 The script is a single file, `aws_bookmarks.py`. Its only third-party dependency is `boto3`. `truststore` is used if it's installed (OS certificate store for TLS), but it isn't required.
 
@@ -113,9 +113,10 @@ Precedence: kwargs / CLI flags > a file named with `--env-file` > environment (i
 | `ddb_profile` | `BG_DDB_PROFILE` | — | Profile for the table's account (takes precedence) |
 | `ddb_role_name` | `BG_DDB_ROLE_NAME` | `OrganizationAccountAccessRole` | Role assumed in the table's account when no `ddb_profile` is set and `profile` is in a different account |
 | `attr_account_id` | `BG_ATTR_ACCOUNT_ID` | `accountNumber` | Account number attribute (string or number; zero-padded to 12) |
-| `attr_short_name` | `BG_ATTR_SHORT_NAME` | `accountShortCode` | Short name (falls back to the org account name) |
+| `attr_short_name` | `BG_ATTR_SHORT_NAME` | `accountShortCode` | Short name (falls back to the `tag_short_name` account tag, then the org account name) |
 | `attr_ou` | `BG_ATTR_OU` | `ou` | Business domain (empty/missing → Legacy) |
 | `attr_environment` | `BG_ATTR_ENVIRONMENT` | `environment` | Environment |
+| `tag_short_name` | `BG_TAG_SHORT_NAME` | `Shortname` | Account tag (in Organizations) used for the short name when the table has none or can't be read. Exact key first, then any case; the value is lowercased like the table's. Only accounts without a table short name are looked up |
 | `roles` | `BG_DEFAULT_ROLES` | `ReadOnly,Administrator` | Default roles, comma-separated in display order. Seed each browser's list; roles added later are appended, roles a user removed stay removed |
 | `role_names` | `BG_ROLE_NAMES` | — | Display names for roles, `Role=Name` pairs, comma-separated (role ARNs accepted). Used on links, in the console's role history and in exported bookmarks; a name typed in Settings overrides it |
 | `title` | `BG_TITLE` | `AWS Accounts` | Page title |
@@ -129,6 +130,8 @@ Precedence: kwargs / CLI flags > a file named with `--env-file` > environment (i
 
 Without `ddb_profile`, the table is read with the Organizations session if it's in the table's account, otherwise through `ddb_role_name` assumed from it. The generator refuses to run if the credentials end up in a different account from the ARN.
 
+If the table can't be read (access denied, endpoint unreachable), the org is still rendered, with a warning and exit code 0: short names come from the account tag or account name, and every account is Legacy with no environment, except for env-file overrides and Legacy accounts named like a sandbox (shown as Sbx). An unknown profile, missing credentials or a table that doesn't exist still stop the run.
+
 Flags: `-v` for debug logging, `-q` for warnings only. The generator logs a warning for table rows that match no org account, for org accounts with no table row, and for environment values it doesn't recognize.
 
 ## IAM permissions
@@ -139,6 +142,8 @@ Organizations profile:
 {"Effect": "Allow", "Action": ["organizations:ListRoots", "organizations:ListOrganizationalUnitsForParent",
   "organizations:ListAccountsForParent"], "Resource": "*"}
 ```
+
+Add `organizations:ListTagsForResource` for the short-name tag fallback. Without it the generator warns once and uses account names.
 
 Plus `sts:GetCallerIdentity`, and `sts:AssumeRole` on the DDB role when it's assumed. The DDB principal needs `dynamodb:Scan` on the table.
 

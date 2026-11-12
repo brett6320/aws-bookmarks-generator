@@ -3,7 +3,7 @@
 
 Reads the account list and OU structure from AWS Organizations, enriches each
 account with metadata (short name, business domain, environment) from a
-DynamoDB table, and writes a single self-contained HTML page of switch-role
+DynamoDB table (short names missing there come from an account tag), and writes a single self-contained HTML page of switch-role
 links. The page groups accounts by business domain or by org hierarchy, keeps
 the list of roles in browser localStorage, and can export browser bookmarks.
 
@@ -55,7 +55,7 @@ except Exception:
 import boto3
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, ConnectionError as BotoConnectionError, HTTPClientError
 
 log = logging.getLogger("aws_bookmarks")
 
@@ -104,6 +104,7 @@ SETTINGS = {
     "attr_short_name": ("BG_ATTR_SHORT_NAME", "accountShortCode"),
     "attr_ou": ("BG_ATTR_OU", "ou"),
     "attr_environment": ("BG_ATTR_ENVIRONMENT", "environment"),
+    "tag_short_name": ("BG_TAG_SHORT_NAME", "Shortname"),
     "roles": ("BG_DEFAULT_ROLES", "ReadOnly,Administrator"),
     "role_names": ("BG_ROLE_NAMES", None),
     "title": ("BG_TITLE", "AWS Accounts"),
@@ -322,6 +323,32 @@ def fetch_org(org, include_inactive: bool = False) -> Dict[str, Any]:
     return {"tree": tree, "accounts": accounts}
 
 
+def fetch_tag_values(org, account_ids: Iterable[str], key: str) -> Dict[str, str]:
+    """Account tag `key` (exact match first, then any case) -> {account_id: value}. Access denied stops
+    the lookups (one call, one warning); other errors skip that account."""
+    out: Dict[str, str] = {}
+    skipped: Dict[str, str] = {}
+    for acct_id in account_ids:
+        try:
+            tags = {t["Key"]: t["Value"] for t in _paginate(org, "list_tags_for_resource", "Tags", ResourceId=acct_id)}
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            if code.startswith("AccessDenied"):
+                log.warning("Can't read account tags (%s); short names fall back to account names", code)
+                break
+            skipped[acct_id] = code
+            continue
+        value = tags.get(key)
+        if _blank(value):
+            value = next((v for k, v in tags.items() if k.lower() == key.lower() and not _blank(v)), None)
+        if not _blank(value):
+            out[acct_id] = str(value).strip()
+    if skipped:
+        log.warning("Can't read tags of %d accounts (%s); their short names fall back to account names",
+                    len(skipped), ", ".join(f"{a}: {c}" for a, c in sorted(skipped.items())[:10]))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # DynamoDB metadata
 # --------------------------------------------------------------------------- #
@@ -405,10 +432,11 @@ def _legacy_sandbox(domain: str, env: Optional[str], *names: str) -> bool:
 
 def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]],
           env_overrides: Optional[Dict[str, str]] = None,
-          domain_overrides: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+          domain_overrides: Optional[Dict[str, str]] = None,
+          tag_names: Optional[Dict[str, str]] = None, table_read: bool = True) -> List[Dict[str, Any]]:
     """Org accounts + table metadata. Env-file overrides (account ID -> environment / business domain)
     beat the table and the Legacy sandbox rule."""
-    env_overrides, domain_overrides = env_overrides or {}, domain_overrides or {}
+    env_overrides, domain_overrides, tag_names = env_overrides or {}, domain_overrides or {}, tag_names or {}
     merged = []
     remapped = 0
     for acct_id, info in org["accounts"].items():
@@ -418,8 +446,11 @@ def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]],
         env = normalize_env(env_raw)
         if env_raw not in (None, "") and env is None:
             log.warning("Account %s: unrecognised environment %r", acct_id, env_raw)
-        # short codes are lowercase by convention; the account-name fallback keeps its case
-        short = str(m["shortName"]).strip().lower() if not _blank(m.get("shortName")) else info["name"]
+        # short codes (table, then account tag) are lowercase by convention; the account-name fallback keeps its case
+        if not _blank(m.get("shortName")):
+            short = str(m["shortName"]).strip().lower()
+        else:
+            short = tag_names[acct_id].lower() if acct_id in tag_names else info["name"]
         domain = domain_overrides.get(acct_id) or ou or LEGACY_DOMAIN
         if acct_id in env_overrides:
             env, mapped = env_overrides[acct_id], False
@@ -442,7 +473,8 @@ def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]],
                 "envMapped": mapped,
                 "envOverride": acct_id in env_overrides,
                 # table value when the env file set the business domain
-                "domainTable": ((ou or LEGACY_DOMAIN) if m else "no table row") if acct_id in domain_overrides else None,
+                "domainTable": ((ou or LEGACY_DOMAIN) if m else "no table row" if table_read else "table not read")
+                if acct_id in domain_overrides else None,
                 "hasMetadata": bool(m),
             }
         )
@@ -452,7 +484,7 @@ def merge(org: Dict[str, Any], meta: Dict[str, Dict[str, Any]],
     if remapped:
         log.info("%d %s accounts (Dev, or \"sandbox\" in the name) shown as %s", remapped, LEGACY_DOMAIN, LEGACY_SANDBOX_ENV)
     missing = sum(1 for a in merged if not a["hasMetadata"])
-    if missing:
+    if missing and table_read:
         unset = sum(1 for a in merged if not a["hasMetadata"] and a["id"] not in domain_overrides)
         log.warning("%d org accounts have no DDB metadata (%d shown as %s)", missing, unset, LEGACY_DOMAIN)
     return sorted(merged, key=lambda a: a["shortName"].lower())
@@ -493,25 +525,44 @@ def fetch_org_data(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """One org's tree and merged accounts: {"orgId", "signinUrl", "tree", "accounts"}."""
     log.debug("Using profile=%s region=%s", cfg["profile"] or "default", cfg["region"])
     org_session = get_session(cfg["profile"], cfg["region"])
-    org = fetch_org(get_client("organizations", org_session), cfg["include_inactive"])
+    org_client = get_client("organizations", org_session)
+    org = fetch_org(org_client, cfg["include_inactive"])
 
-    ddb_session = get_ddb_session(cfg, org_session)
-    meta = fetch_metadata(
-        get_client("dynamodb", ddb_session, cfg["ddb_region"]),
-        cfg["ddb_table"],
-        {
-            "account_id": cfg["attr_account_id"],
-            "short_name": cfg["attr_short_name"],
-            "ou": cfg["attr_ou"],
-            "environment": cfg["attr_environment"],
-        },
-    )
+    # no access or no connection: render without the table. Config mistakes (unknown profile,
+    # missing table, no credentials) still stop the run.
+    try:
+        ddb_session = get_ddb_session(cfg, org_session)
+        meta = fetch_metadata(
+            get_client("dynamodb", ddb_session, cfg["ddb_region"]),
+            cfg["ddb_table"],
+            {
+                "account_id": cfg["attr_account_id"],
+                "short_name": cfg["attr_short_name"],
+                "ou": cfg["attr_ou"],
+                "environment": cfg["attr_environment"],
+            },
+        )
+        table_read = True
+    except (ClientError, BotoConnectionError, HTTPClientError) as e:
+        if isinstance(e, ClientError) and e.response["Error"]["Code"] == "ResourceNotFoundException":
+            raise
+        detail = e.response["Error"]["Code"] if isinstance(e, ClientError) else f"{type(e).__name__}: {e}"
+        log.warning("Can't read DynamoDB table %s (%s); short names from account tag %r, every account %s "
+                    "with no environment unless set in the env file (or named like a sandbox)",
+                    cfg["ddb_table"], detail, cfg["tag_short_name"], LEGACY_DOMAIN)
+        meta, table_read = {}, False
+    untagged = [a for a in org["accounts"] if _blank(meta.get(a, {}).get("shortName"))]
+    tag_names = fetch_tag_values(org_client, untagged, cfg["tag_short_name"]) if untagged else {}
+    if untagged:
+        log.info("Account tag %r gave short names for %d of %d accounts%s",
+                 cfg["tag_short_name"], len(tag_names), len(untagged),
+                 " without one in the table" if table_read else "")
     partition = org_session.get_partition_for_region(cfg["region"])
     return {
         "orgId": org["tree"].get("orgId"),
         "signinUrl": SIGNIN_URLS.get(partition, SIGNIN_URLS["aws"]),
         "tree": org["tree"],
-        "accounts": merge(org, meta, cfg["account_environments"], cfg["account_domains"]),
+        "accounts": merge(org, meta, cfg["account_environments"], cfg["account_domains"], tag_names, table_read),
     }
 
 
@@ -667,6 +718,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--attr-short-name", help="DDB attribute: short name (default accountShortCode)")
     p.add_argument("--attr-ou", help="DDB attribute: OU / business domain (default ou)")
     p.add_argument("--attr-environment", help="DDB attribute: environment (default environment)")
+    p.add_argument("--tag-short-name", help="Account tag used for the short name when the table has none "
+                                            "or can't be read (default Shortname)")
     p.add_argument("--roles", help="Comma-separated roles seeded into the page on first load")
     p.add_argument("--role-names", help="Display names for roles: Role=Name,... (default BG_ROLE_NAMES)")
     p.add_argument("--org-roles", help="Comma-separated roles added for this org only (default BG_ORG_ROLES)")
